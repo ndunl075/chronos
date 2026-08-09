@@ -9,7 +9,7 @@
   "exports": "./dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node --test",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "test": "npm run build && node --test test/paths.test.mjs test/policy.test.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json"
   }
 }
