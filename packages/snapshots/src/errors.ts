@@ -4,7 +4,11 @@ export type SnapshotErrorCode =
   | "INVALID_OPTIONS"
   | "INVALID_MANIFEST"
   | "LIMIT_EXCEEDED"
-  | "DIGEST_MISMATCH";
+  | "DIGEST_MISMATCH"
+  | "UNSAFE_LOCATION"
+  | "TARGET_NOT_EMPTY"
+  | "MISSING_BLOB"
+  | "IO_FAILED";
 
 /** Why a path is not safe to record in, or restore from, a snapshot. */
 export type PathRejection =

@@ -45,3 +45,15 @@ export {
   type ManifestLimits,
   type SnapshotManifest,
 } from "./manifest.js";
+export { ContentStore, type ContentStoreOptions } from "./store.js";
+export {
+  captureWorkspace,
+  type CaptureOptions,
+  type CaptureResult,
+  type ExcludedEntry,
+} from "./capture.js";
+export {
+  restoreSnapshot,
+  type RestoreOptions,
+  type RestoreResult,
+} from "./restore.js";
