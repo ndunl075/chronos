@@ -28,28 +28,49 @@ CLI -> localhost API/SSE -> timeline UI
                      branch planner -> isolated restore -> adapter launch plan
 ```
 
-| Module | Responsibility |
-| --- | --- |
-| `packages/core` | Domain types, invariants, branch/replay planning; no I/O |
-| `packages/protocol` | Versioned schemas shared by API, CLI, and UI |
-| `packages/storage` | SQLite migrations and repositories |
-| `packages/adapters` | Provider-specific import/export behind one interface |
-| `packages/snapshots` | Ignore-aware manifests, blobs, capture, restore |
-| `apps/server` | Loopback HTTP API and SSE event stream |
-| `apps/web` | Virtualized transcript, scrubber, branch composer |
-| `apps/cli` | `import`, `inspect`, `serve`, and `branch` workflows |
+| Module               | Responsibility                                           |
+| -------------------- | -------------------------------------------------------- |
+| `packages/core`      | Domain types, invariants, branch/replay planning; no I/O |
+| `packages/protocol`  | Versioned schemas shared by API, CLI, and UI             |
+| `packages/storage`   | SQLite migrations and repositories                       |
+| `packages/adapters`  | Provider-specific import/export behind one interface     |
+| `packages/snapshots` | Ignore-aware manifests, blobs, capture, restore          |
+| `apps/server`        | Loopback HTTP API and SSE event stream                   |
+| `apps/web`           | Virtualized transcript, scrubber, branch composer        |
+| `apps/cli`           | `import`, `inspect`, `serve`, and `branch` workflows     |
 
 ## Canonical records
 
 ```ts
 type Session = { id: string; source: string; createdAt: string };
-type Branch = { id: string; sessionId: string; parentId?: string; forkSeq?: number; state: "preparing" | "ready" | "failed" };
-type Event = {
-  id: string; branchId: string; seq: number; kind: EventKind;
-  occurredAt: string; summary: string; payload: unknown; rawRef?: string;
+type Branch = {
+  id: string;
+  sessionId: string;
+  parentId?: string;
+  forkSeq?: number;
+  state: "preparing" | "ready" | "failed";
 };
-type Checkpoint = { id: string; branchId: string; eventSeq: number; manifestRef: string };
-type LaunchPlan = { workspacePath: string; context: ReplayItem[]; instruction: string };
+type Event = {
+  id: string;
+  branchId: string;
+  seq: number;
+  kind: EventKind;
+  occurredAt: string;
+  summary: string;
+  payload: unknown;
+  rawRef?: string;
+};
+type Checkpoint = {
+  id: string;
+  branchId: string;
+  eventSeq: number;
+  manifestRef: string;
+};
+type LaunchPlan = {
+  workspacePath: string;
+  context: ReplayItem[];
+  instruction: string;
+};
 ```
 
 `seq` is a 1-based logical session coordinate. `(branchId, seq)` is unique; a child at parent sequence N resolves parent history through N (recursively), then owns events N+1 onward. Payloads and optional raw envelopes carry schema versions. Lineage tests cover nested forks.
