@@ -189,6 +189,42 @@ export interface EventCapabilities {
   readonly branchability: BranchabilityStatus;
 }
 
+/*
+ * The API contract. These shapes cross a network boundary, so they are part
+ * of the versioned protocol rather than an implementation detail of the
+ * server: the CLI and the UI decode exactly what the server encodes.
+ */
+
+export type ApiErrorCode =
+  | "bad_request"
+  | "unauthorized"
+  | "forbidden"
+  | "not_found"
+  | "method_not_allowed"
+  | "unsupported_media_type"
+  | "payload_too_large"
+  | "conflict"
+  | "internal";
+
+/** The single error shape every failing request returns. */
+export interface ApiErrorBody {
+  readonly schemaVersion: ProtocolSchemaVersion;
+  readonly error: {
+    readonly code: ApiErrorCode;
+    /** Safe to show a user; it never contains a token or a filesystem path. */
+    readonly message: string;
+  };
+}
+
+/** Everything a client needs to know it is talking to a server it supports. */
+export interface ServerInfo {
+  readonly schemaVersion: ProtocolSchemaVersion;
+  readonly name: "chronos";
+  readonly protocolVersion: ProtocolSchemaVersion;
+  /** Loopback only, unless a future build adds explicit TLS configuration. */
+  readonly bind: string;
+}
+
 /** True only for finite, integer, 1-based logical sequence coordinates. */
 export function isLogicalSequence(value: unknown): value is LogicalSequence {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
