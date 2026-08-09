@@ -106,6 +106,10 @@ Each verified vertical feature slice gets a meaningful commit and push; a phase 
 9. **End to end:** import -> scrub -> restore -> child instruction scenario.
 10. **Release:** CI, threat model, contributor/security reporting docs, versioned formats.
 
+### Delivered Web slice
+
+`apps/web` now provides a dependency-free, same-origin timeline instrument over the authenticated API: session/branch selection, paged visible history, transcript scrubbing, lazy event payload and capability inspection, and a branch composer that remains disabled at non-reconstructable events. It stores the per-run bearer token in session storage only and makes launch a separate action. Static serving and live SSE refresh remain server/CLI integration work.
+
 ## Phase checklist
 
 For every phase: read the dependency's official/local docs; copy documented APIs and signatures; add focused tests; run format, lint, typecheck, and tests; grep for phase anti-patterns; review the diff; then commit and push. Never invent provider formats, auto-run imported actions, mutate parent history, or write snapshots into the inspected repository.

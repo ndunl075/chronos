@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Chronos — Session Instrument</title>
+  </head>
+  <body>
+    <div id="chronos"></div>
+    <script type="module">
+      import { ChronosApiClient, mountChronos } from "./dist/index.js";
+
+      const query = new URLSearchParams(location.search);
+      const token =
+        query.get("token") ?? sessionStorage.getItem("chronos.token") ?? "";
+      if (token.length > 0) sessionStorage.setItem("chronos.token", token);
+
+      const root = document.querySelector("#chronos");
+      if (token.length === 0) {
+        root.innerHTML = `<main style="max-width:680px;margin:15vh auto;padding:32px;color:#e7e1d3;background:#080907;font-family:Georgia,serif"><p style="color:#d7ff35;font:12px monospace">CHRONOS / AUTH REQUIRED</p><h1>Open this instrument with the per-run server token.</h1><p>Append <code>?token=…</code> once. It is moved into session storage and is never written to disk.</p></main>`;
+      } else {
+        history.replaceState(null, "", location.pathname);
+        mountChronos(
+          root,
+          new ChronosApiClient({ baseUrl: location.origin, token }),
+        );
+      }
+    </script>
+  </body>
+</html>

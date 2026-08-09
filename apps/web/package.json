@@ -4,12 +4,14 @@
   "private": true,
   "type": "module",
   "files": [
-    "dist"
+    "dist",
+    "index.html"
   ],
   "exports": "./dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node --test",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "dev": "npm run build && node scripts/serve.mjs",
+    "test": "npm run build && node --test test/web.test.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json"
   }
 }
