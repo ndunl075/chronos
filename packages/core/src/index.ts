@@ -374,23 +374,24 @@ export function computeEventCapabilities(
         effectiveRestoreSeq: target,
       };
     } else {
-      const requiredDeltas = visible.filter(
+      const mutatingBoundaries = visible.filter(
         (item) =>
-          item.seq > checkpoint.eventSeq && item.kind === "filesystem_change",
+          item.seq > checkpoint.eventSeq &&
+          (item.kind === "filesystem_change" ||
+            item.kind === "tool_result" ||
+            isUnknownWorkspaceError(item)),
       );
-      if (
-        requiredDeltas.some(
-          (item) => !checkedEvidence.availableDeltaEventIds.has(item.id),
-        )
-      ) {
+      // v0.1 persists full manifests only. A tool result without its paired
+      // checkpoint is dirty even when no filesystem_change was recorded, and
+      // caller-supplied delta evidence cannot turn it into reconstructable state.
+      if (mutatingBoundaries.length > 0) {
         firstFailure ??= "missing_delta";
         continue;
       }
       reconstruction = {
-        kind: "checkpoint_plus_deltas",
+        kind: "exact",
         checkpointId: checkpoint.id,
         checkpointEventSeq: checkpoint.eventSeq,
-        deltaEventSeqs: requiredDeltas.map((item) => item.seq),
         effectiveRestoreSeq: target,
       };
     }
@@ -404,6 +405,17 @@ export function computeEventCapabilities(
     event.id,
     replayability,
     firstFailure ?? "no_checkpoint",
+  );
+}
+
+function isUnknownWorkspaceError(event: Event): boolean {
+  if (event.kind !== "error") return false;
+  const data = event.payload.data;
+  if (data === null || typeof data !== "object" || Array.isArray(data))
+    return false;
+  return (
+    (data as Readonly<Record<string, unknown>>)["workspaceState"] ===
+    "unknown_after_tool_call"
   );
 }
 

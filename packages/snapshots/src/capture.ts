@@ -1,11 +1,24 @@
-import { readFileSync, readdirSync, statSync, type Dirent } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  type BigIntStats,
+  type Dirent,
+} from "node:fs";
 import { join, resolve } from "node:path";
 
 import { fail } from "./errors.js";
 import {
   buildManifest,
+  resolveManifestLimits,
   type ManifestFileInput,
   type ManifestLimits,
+  type ResolvedManifestLimits,
   type SnapshotManifest,
 } from "./manifest.js";
 import {
@@ -16,7 +29,13 @@ import {
   type PathPolicy,
 } from "./policy.js";
 import type { PathLimits } from "./paths.js";
-import { ContentStore, io, isDirectory } from "./store.js";
+import {
+  ContentStore,
+  canonicalizePotentialPath,
+  contains,
+  io,
+  isDirectory,
+} from "./store.js";
 
 export interface CaptureOptions {
   /** The workspace to snapshot. It is only read, never written. */
@@ -53,7 +72,8 @@ export function captureWorkspace(options: CaptureOptions): CaptureResult {
   if (!(store instanceof ContentStore)) {
     fail("INVALID_OPTIONS", "A capture needs a content store");
   }
-  const workspaceRoot = resolve(requiredPath(options.workspaceRoot));
+  const requestedRoot = resolve(requiredPath(options.workspaceRoot));
+  const workspaceRoot = canonicalizePotentialPath(requestedRoot);
   if (!isDirectory(workspaceRoot)) {
     fail("IO_FAILED", `The workspace is not a directory: ${workspaceRoot}`);
   }
@@ -61,17 +81,24 @@ export function captureWorkspace(options: CaptureOptions): CaptureResult {
 
   const policy = options.policy ?? DEFAULT_PATH_POLICY;
   const limits = options.limits ?? {};
+  // Resolved once, up front, so the walk enforces the exact same defaults
+  // buildManifest would otherwise only discover after every file underneath
+  // them was already read, hashed, and written into the content store.
+  const resolvedLimits = resolveManifestLimits(limits);
   const files: ManifestFileInput[] = [];
   const directories: string[] = [];
   const excluded: ExcludedEntry[] = [];
 
   walk(workspaceRoot, [], {
+    root: workspaceRoot,
     store,
     policy,
     limits,
+    resolvedLimits,
     files,
     directories,
     excluded,
+    totalBytes: 0,
   });
 
   return Object.freeze({
@@ -81,12 +108,16 @@ export function captureWorkspace(options: CaptureOptions): CaptureResult {
 }
 
 interface WalkContext {
+  readonly root: string;
   readonly store: ContentStore;
   readonly policy: PathPolicy;
   readonly limits: ManifestLimits & { readonly path?: PathLimits };
+  readonly resolvedLimits: ResolvedManifestLimits;
   readonly files: ManifestFileInput[];
   readonly directories: string[];
   readonly excluded: ExcludedEntry[];
+  /** Running total of captured bytes, checked before each file is read. */
+  totalBytes: number;
 }
 
 function walk(
@@ -95,6 +126,7 @@ function walk(
   context: WalkContext,
 ): void {
   const absolute = segments.length === 0 ? root : join(root, ...segments);
+  assertSafeDirectory(root, absolute);
   const entries = io(
     () => readdirSync(absolute, { withFileTypes: true }),
     `The workspace directory could not be read: ${absolute}`,
@@ -129,6 +161,12 @@ function walk(
       walk(root, childSegments, context);
       continue;
     }
+    if (context.files.length >= context.resolvedLimits.maxFiles) {
+      fail("LIMIT_EXCEEDED", "Snapshot holds too many files", {
+        files: context.files.length + 1,
+        maxFiles: context.resolvedLimits.maxFiles,
+      });
+    }
     captureFile(join(root, ...childSegments), path, context);
   }
 
@@ -143,28 +181,148 @@ function captureFile(
   path: string,
   context: WalkContext,
 ): void {
+  const beforePath = inspectFilePath(absolute, path, context);
+  const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
+  const fd = io(
+    () => openSync(absolute, constants.O_RDONLY | noFollow),
+    `The file could not be opened without following links: ${path}`,
+  );
+  try {
+    const before = io(
+      () => fstatSync(fd, { bigint: true }),
+      `The opened file could not be inspected: ${path}`,
+    );
+    requireRegular(before, path);
+    requireSameIdentity(beforePath.stats, before, path);
+    assertOpenedFileContained(fd, absolute, path, context);
+    const { maxFileBytes, maxTotalBytes } = context.resolvedLimits;
+    if (before.size > BigInt(maxFileBytes)) {
+      fail("LIMIT_EXCEEDED", `File exceeds the size cap: ${path}`, {
+        path,
+        size: Number(before.size),
+        maxFileBytes,
+      });
+    }
+    // Checked before the read, not after: a workspace that would blow the
+    // total cap must not have its remaining bytes read, hashed, and written
+    // into the content store first.
+    if (context.totalBytes + Number(before.size) > maxTotalBytes) {
+      fail("LIMIT_EXCEEDED", "Snapshot exceeds the total size cap", {
+        maxTotalBytes,
+      });
+    }
+    const bytes = io(
+      () => new Uint8Array(readFileSync(fd)),
+      `The file could not be read: ${path}`,
+    );
+    const after = io(
+      () => fstatSync(fd, { bigint: true }),
+      `The opened file could not be re-inspected: ${path}`,
+    );
+    requireStable(before, after, bytes.byteLength, path);
+    const afterPath = inspectFilePath(absolute, path, context);
+    requireSameIdentity(before, afterPath.stats, path);
+    assertOpenedFileContained(fd, absolute, path, context);
+    context.files.push({
+      path,
+      mode: fileMode(Number(before.mode)),
+      size: bytes.byteLength,
+      digest: context.store.put(bytes),
+    });
+    context.totalBytes += bytes.byteLength;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function assertSafeDirectory(root: string, absolute: string): void {
   const stats = io(
-    () => statSync(absolute),
+    () => lstatSync(absolute),
+    `The workspace directory could not be inspected: ${absolute}`,
+  );
+  if (!stats.isDirectory() || stats.isSymbolicLink())
+    fail(
+      "IO_FAILED",
+      `Workspace directory is not a real directory: ${absolute}`,
+    );
+  const canonical = io(
+    () => realpathSync.native(absolute),
+    `The workspace directory could not be canonicalized: ${absolute}`,
+  );
+  if (!contains(root, canonical))
+    fail("UNSAFE_LOCATION", "Workspace traversal escaped its canonical root");
+}
+
+function inspectFilePath(
+  absolute: string,
+  path: string,
+  context: WalkContext,
+): { readonly stats: BigIntStats; readonly canonical: string } {
+  const stats = io(
+    () => lstatSync(absolute, { bigint: true }),
     `The file could not be inspected: ${path}`,
   );
-  const maxFileBytes = context.limits.maxFileBytes;
-  if (maxFileBytes !== undefined && stats.size > maxFileBytes) {
-    fail("LIMIT_EXCEEDED", `File exceeds the size cap: ${path}`, {
-      path,
-      size: stats.size,
-      maxFileBytes,
-    });
-  }
-  const bytes = io(
-    () => new Uint8Array(readFileSync(absolute)),
-    `The file could not be read: ${path}`,
+  requireRegular(stats, path);
+  if (stats.isSymbolicLink())
+    fail("UNSAFE_LOCATION", `A symbolic link cannot be captured: ${path}`);
+  const canonical = io(
+    () => realpathSync.native(absolute),
+    `The file could not be canonicalized: ${path}`,
   );
-  context.files.push({
-    path,
-    mode: fileMode(stats.mode),
-    size: bytes.byteLength,
-    digest: context.store.put(bytes),
-  });
+  if (!contains(context.root, canonical))
+    fail("UNSAFE_LOCATION", `A file escaped the workspace: ${path}`);
+  return { stats, canonical };
+}
+
+function requireRegular(stats: BigIntStats, path: string): void {
+  if (!stats.isFile())
+    fail("IO_FAILED", `Workspace entry is not a regular file: ${path}`);
+}
+
+function requireSameIdentity(
+  left: BigIntStats,
+  right: BigIntStats,
+  path: string,
+): void {
+  if (left.dev !== right.dev || left.ino !== right.ino)
+    fail("IO_FAILED", `File identity changed during capture: ${path}`);
+}
+
+function requireStable(
+  before: BigIntStats,
+  after: BigIntStats,
+  bytes: number,
+  path: string,
+): void {
+  if (
+    before.dev !== after.dev ||
+    before.ino !== after.ino ||
+    before.size !== after.size ||
+    before.mtimeNs !== after.mtimeNs ||
+    before.ctimeNs !== after.ctimeNs ||
+    after.size !== BigInt(bytes)
+  ) {
+    fail("IO_FAILED", `File changed while it was captured: ${path}`);
+  }
+}
+
+function assertOpenedFileContained(
+  fd: number,
+  absolute: string,
+  path: string,
+  context: WalkContext,
+): void {
+  let canonical: string;
+  try {
+    canonical =
+      process.platform === "linux"
+        ? realpathSync.native(`/proc/self/fd/${String(fd)}`)
+        : realpathSync.native(absolute);
+  } catch {
+    fail("IO_FAILED", `The opened file could not be canonicalized: ${path}`);
+  }
+  if (!contains(context.root, canonical))
+    fail("UNSAFE_LOCATION", `An opened file escaped the workspace: ${path}`);
 }
 
 /**

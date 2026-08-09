@@ -22,7 +22,7 @@ export interface PathPolicy {
   readonly ignore: readonly string[];
   /** Patterns treated as secrets. Detection is best-effort. */
   readonly secrets: readonly string[];
-  /** Re-includes checked last, so a caller can keep one ignored path. */
+  /** Re-includes checked last, except the reserved `.chronos/` runtime root. */
   readonly include: readonly string[];
 }
 
@@ -33,6 +33,7 @@ export interface PathPolicy {
  * a workspace that lies about its own history.
  */
 export const DEFAULT_IGNORE_PATTERNS: readonly string[] = Object.freeze([
+  ".chronos/",
   ".git/",
   ".hg/",
   ".svn/",
@@ -108,8 +109,9 @@ export function pathPolicy(overrides: Partial<PathPolicy> = {}): PathPolicy {
  *
  * Order matters: an unsafe path is refused before any pattern is consulted,
  * anything that is not a regular file or directory is refused because a
- * socket or device cannot be restored faithfully, and an explicit include
- * overrides ignore and secret patterns because the user asked for it.
+ * socket or device cannot be restored faithfully. The reserved `.chronos/`
+ * root is never overridable; other explicit includes override ignore and
+ * secret patterns because the user asked for them.
  */
 export function classifyPath(
   path: string,
@@ -130,6 +132,16 @@ export function classifyPath(
       included: false,
       reason: "unsupported_entry",
       detail: kind,
+    });
+  }
+  // Chronos runtime material is never workspace state. Treat the reserved
+  // root name case-insensitively on every host so a capture made on Linux
+  // cannot restore `.ChRoNoS` onto a case-insensitive Windows filesystem.
+  if (path.split("/", 1)[0]?.toLowerCase() === ".chronos") {
+    return Object.freeze({
+      included: false,
+      reason: "ignored",
+      pattern: ".chronos/",
     });
   }
   if (matches(path, policy.include) !== undefined) {

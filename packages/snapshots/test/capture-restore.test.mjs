@@ -12,19 +12,31 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, parse, resolve } from "node:path";
 import process from "node:process";
 import test from "node:test";
 
 import {
   ContentStore,
   blobRef,
+  canonicalizePotentialPath,
   captureWorkspace,
   diffManifests,
   restoreSnapshot,
 } from "../dist/index.js";
 
 const POSIX = process.platform !== "win32";
+
+test("potential paths preserve every missing suffix from a filesystem root", () => {
+  const filesystemRoot = parse(resolve(tmpdir())).root;
+  const missing = join(
+    filesystemRoot,
+    `chronos-missing-${process.pid}-${Date.now()}`,
+    "one",
+    "two",
+  );
+  assert.equal(canonicalizePotentialPath(missing), resolve(missing));
+});
 
 function sandbox(t) {
   const root = mkdtempSync(join(tmpdir(), "chronos-snapshots-"));
@@ -94,6 +106,43 @@ test("a store refuses to live inside the workspace it captures", (t) => {
   const box = sandbox(t);
   const inside = new ContentStore({ root: join(box.workspace, ".chronos") });
 
+  assert.throws(
+    () => captureWorkspace({ workspaceRoot: box.workspace, store: inside }),
+    (error) => error.code === "UNSAFE_LOCATION",
+  );
+});
+
+test("store/workspace aliases cannot bypass outside-location checks", (t) => {
+  const box = sandbox(t);
+  const nestedStore = join(box.workspace, "nested-store");
+  mkdirSync(nestedStore);
+  const alias = join(box.root, "store-alias");
+  try {
+    symlinkSync(
+      nestedStore,
+      alias,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+  } catch {
+    t.skip("this host does not allow creating directory aliases");
+    return;
+  }
+  const aliased = new ContentStore({ root: join(alias, "not-yet-created") });
+  assert.throws(
+    () => captureWorkspace({ workspaceRoot: box.workspace, store: aliased }),
+    (error) => error.code === "UNSAFE_LOCATION",
+  );
+});
+
+test("Windows store containment is case-insensitive", (t) => {
+  if (process.platform !== "win32") {
+    t.skip("Windows-only path semantics");
+    return;
+  }
+  const box = sandbox(t);
+  const inside = new ContentStore({
+    root: join(box.workspace.toUpperCase(), "CASE-STORE"),
+  });
   assert.throws(
     () => captureWorkspace({ workspaceRoot: box.workspace, store: inside }),
     (error) => error.code === "UNSAFE_LOCATION",
@@ -328,4 +377,65 @@ test("capture limits stop a workspace that is too large", (t) => {
       }),
     (error) => error.code === "IO_FAILED",
   );
+});
+
+test("a file count limit stops the walk before the excess file is read", (t) => {
+  const box = sandbox(t);
+  box.write("a.txt", "first");
+  box.write("z.txt", "z".repeat(64));
+
+  assert.throws(
+    () =>
+      captureWorkspace({
+        workspaceRoot: box.workspace,
+        store: box.store,
+        limits: { maxFiles: 1 },
+      }),
+    (error) => error.code === "LIMIT_EXCEEDED",
+  );
+  // z.txt sorts after a.txt, so it is the one the limit should stop the
+  // walk from ever opening, reading, or storing.
+  assert.equal(box.store.has(blobRef(bytes("z".repeat(64)))), false);
+});
+
+test("a total-bytes limit stops the walk before the excess file is read", (t) => {
+  const box = sandbox(t);
+  box.write("a.txt", "x".repeat(10));
+  box.write("z.txt", "z".repeat(10));
+
+  assert.throws(
+    () =>
+      captureWorkspace({
+        workspaceRoot: box.workspace,
+        store: box.store,
+        limits: { maxTotalBytes: 10 },
+      }),
+    (error) => error.code === "LIMIT_EXCEEDED",
+  );
+  // a.txt alone already spends the whole cap, so z.txt must never be opened,
+  // read, or stored — the limit has to stop the walk mid-traversal, not only
+  // reject the finished manifest afterward.
+  assert.equal(box.store.has(blobRef(bytes("z".repeat(10)))), false);
+});
+
+test("the default file-size limit is enforced during the walk, not only afterward", (t) => {
+  const box = sandbox(t);
+  const oversized = "x".repeat(16 * 1024 * 1024 + 1);
+  box.write("a-oversized.bin", oversized);
+  box.write("z-small.txt", "small");
+
+  assert.throws(
+    () =>
+      captureWorkspace({
+        workspaceRoot: box.workspace,
+        store: box.store,
+      }),
+    (error) => error.code === "LIMIT_EXCEEDED",
+  );
+  // No explicit limits were given, so this only passes if the default
+  // maxFileBytes (16 MiB) is resolved and enforced against every file as the
+  // walk visits it — not just re-discovered by buildManifest once the whole
+  // oversized file, and everything after it, was already read and stored.
+  assert.equal(box.store.has(blobRef(bytes(oversized))), false);
+  assert.equal(box.store.has(blobRef(bytes("small"))), false);
 });

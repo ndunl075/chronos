@@ -106,7 +106,7 @@ test("computes exact, delta, missing-delta, no-checkpoint, and state capabilitie
   const delta = computeEventCapabilities(index, "grand", seq(4), {
     availableDeltaEventIds: ["c3"],
   });
-  assert.deepEqual(delta.branchability.reconstruction.deltaEventSeqs, [3]);
+  assert.equal(delta.branchability.reason, "missing_delta");
   assert.equal(
     computeEventCapabilities(index, "grand", seq(4)).branchability.reason,
     "missing_delta",
@@ -119,20 +119,77 @@ test("computes exact, delta, missing-delta, no-checkpoint, and state capabilitie
   );
 });
 
+test("an uncheckpointed tool result is a dirty mutating boundary", () => {
+  const index = indexSession(
+    graph({
+      branches: [root],
+      events: [
+        event("baseline", "root", 1, "system"),
+        event("result", "root", 2, "tool_result"),
+      ],
+      checkpoints: [
+        {
+          id: "baseline-cp",
+          branchId: "root",
+          eventSeq: seq(1),
+          manifestRef: "m",
+        },
+      ],
+    }),
+  );
+  assert.equal(
+    computeEventCapabilities(index, "root", seq(2), {
+      availableDeltaEventIds: ["result"],
+    }).branchability.reason,
+    "missing_delta",
+  );
+});
+
+test("a provider failure after an unmatched tool call is a dirty boundary", () => {
+  const dirtyError = {
+    ...event("failed", "root", 3, "error"),
+    payload: canonicalEnvelope({
+      code: "invalid_provider_stream",
+      workspaceState: "unknown_after_tool_call",
+    }),
+  };
+  const index = indexSession(
+    graph({
+      branches: [root],
+      events: [
+        event("baseline", "root", 1, "system"),
+        event("call", "root", 2, "tool_call"),
+        dirtyError,
+      ],
+      checkpoints: [
+        {
+          id: "baseline-cp",
+          branchId: "root",
+          eventSeq: seq(1),
+          manifestRef: "m",
+        },
+      ],
+    }),
+  );
+  assert.equal(
+    computeEventCapabilities(index, "root", seq(3)).branchability.reason,
+    "missing_delta",
+  );
+});
+
 test("prepares a frozen branch state-transition intent without executing I/O", () => {
   const index = indexSession(graph());
   const plan = prepareBranchPlan(index, {
     id: "new",
-    parentBranchId: "grand",
-    forkSeq: seq(4),
+    parentBranchId: "root",
+    forkSeq: seq(2),
     instruction: "Try another approach",
-    evidence: { availableDeltaEventIds: ["c3"] },
   });
   assert.deepEqual(plan.branch, {
     id: "new",
     sessionId: "s1",
-    parentId: "grand",
-    forkSeq: 4,
+    parentId: "root",
+    forkSeq: 2,
     state: "preparing",
   });
   assert.deepEqual(plan.completionTransition, {
@@ -414,7 +471,7 @@ test("falls back to an older checkpoint and marks redacted replay immutably", ()
       events: [
         event("r1", "root", 1, "checkpoint"),
         event("r2", "root", 2, "checkpoint"),
-        event("r3", "root", 3, "filesystem_change"),
+        event("r3", "root", 3, "assistant_message"),
       ],
       checkpoints: [
         { id: "old", branchId: "root", eventSeq: seq(1), manifestRef: "old" },
@@ -423,7 +480,6 @@ test("falls back to an older checkpoint and marks redacted replay immutably", ()
     }),
   );
   const result = computeEventCapabilities(index, "root", seq(3), {
-    availableDeltaEventIds: ["r3"],
     redactedEventIds: ["r3"],
     unusableCheckpoints: [{ checkpointId: "new", reason: "invalid_manifest" }],
   });
@@ -431,7 +487,10 @@ test("falls back to an older checkpoint and marks redacted replay immutably", ()
   assert.equal(result.replayability.reason, "required_data_redacted");
   assert.equal(Object.isFrozen(result.branchability.reconstruction), true);
   const failure = computeEventCapabilities(index, "root", seq(3), {
-    unusableCheckpoints: [{ checkpointId: "new", reason: "invalid_manifest" }],
+    unusableCheckpoints: [
+      { checkpointId: "new", reason: "invalid_manifest" },
+      { checkpointId: "old", reason: "invalid_manifest" },
+    ],
   });
   assert.equal(failure.branchability.reason, "invalid_manifest");
 });

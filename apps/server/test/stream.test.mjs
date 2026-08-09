@@ -279,6 +279,19 @@ test("a rejected append leaves no partial history and no broadcast", async (t) =
   assert.equal(unknownBranch.status, 404);
 });
 
+test("live append cannot bypass the record coordinator for mutating events", async (t) => {
+  const { server } = await serve(t);
+  for (const kind of ["tool_call", "tool_result", "filesystem_change"]) {
+    const response = await call(server, {
+      method: "POST",
+      path: "/branches/root/events",
+      body: { events: [event(`blocked-${kind}`, 1, { kind })] },
+    });
+    assert.equal(response.status, 400, kind);
+    assert.match(response.body.error.message, /record coordinator/);
+  }
+});
+
 test("appended data is redacted before it is stored", async (t) => {
   const { server } = await serve(t);
 
@@ -288,7 +301,7 @@ test("appended data is redacted before it is stored", async (t) => {
     body: {
       events: [
         event("e1", 1, {
-          kind: "tool_result",
+          kind: "assistant_message",
           summary: "exported AKIAIOSFODNN7EXAMPLE",
           payload: canonicalEnvelope({
             stdout: "AKIAIOSFODNN7EXAMPLE",

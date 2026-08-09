@@ -37,3 +37,9 @@ export {
   parseClaudeJsonl,
 } from "./claude-jsonl.js";
 export { DEFAULT_PROVIDER_MAX_INPUT_LENGTH } from "./provider-common.js";
+export {
+  createProviderStreamNormalizer,
+  type ProviderAgent,
+  type ProviderStreamNormalizer,
+  type StreamEvent,
+} from "./provider-stream.js";

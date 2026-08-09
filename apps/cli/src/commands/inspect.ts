@@ -8,7 +8,9 @@ import {
 } from "@chronos/core";
 import {
   isLogicalSequence,
+  logicalSequence,
   type Branch,
+  type Event,
   type EventCapabilities,
   type LogicalSequence,
 } from "@chronos/protocol";
@@ -169,9 +171,26 @@ function showTimeline(
 ): void {
   const branch = repository.getBranch(branchId);
   if (branch === undefined) failure(`No such branch: ${branchId}`);
-  const index = indexFor(repository, branch.sessionId);
-  const from = sequenceFlag(args, "from") ?? 1;
+  const from = sequenceFlag(args, "from") ?? logicalSequence(1);
   const limit = limitFlag(args);
+
+  if (branch.state !== "ready") {
+    const page = repository.listEvents(branchId, { fromSeq: from, limit });
+    const total = repository.countEvents(branchId);
+    const rows = page.map((event) => ({
+      seq: event.seq,
+      id: event.id,
+      kind: event.kind,
+      inherited: false,
+      summary: event.summary,
+      branchable: false,
+      reason: "branch_not_ready" as const,
+    }));
+    reportTimeline(branchId, total, from, rows, context);
+    return;
+  }
+
+  const index = indexFor(repository, branch.sessionId);
 
   const visible = resolveVisibleEvents(index, branchId);
   const page = visible.filter((event) => event.seq >= from).slice(0, limit);
@@ -189,8 +208,26 @@ function showTimeline(
     };
   });
 
+  reportTimeline(branchId, visible.length, from, rows, context);
+}
+
+function reportTimeline(
+  branchId: string,
+  visible: number,
+  from: number,
+  rows: readonly Readonly<{
+    seq: LogicalSequence;
+    id: string;
+    kind: Event["kind"];
+    inherited: boolean;
+    summary: string;
+    branchable: boolean;
+    reason: string | undefined;
+  }>[],
+  context: CommandContext,
+): void {
   context.reporter.line(
-    `Branch ${branchId} (${String(visible.length)} events visible)`,
+    `Branch ${branchId} (${String(visible)} events visible)`,
   );
   context.reporter.line();
   for (const line of table([
@@ -204,15 +241,15 @@ function showTimeline(
   ])) {
     context.reporter.line(line);
   }
-  if (rows.length < visible.length - (from - 1)) {
+  if (rows.length < visible - (from - 1)) {
     context.reporter.line();
     context.reporter.line(
-      `Showing ${String(rows.length)} of ${String(visible.length)}; continue with --from ${String(from + rows.length)}`,
+      `Showing ${String(rows.length)} of ${String(visible)}; continue with --from ${String(from + rows.length)}`,
     );
   }
   context.reporter.line();
   context.reporter.line("* marks an event a branch can be created from.");
-  context.reporter.result({ branchId, visible: visible.length, events: rows });
+  context.reporter.result({ branchId, visible, events: rows });
 }
 
 function showEvent(

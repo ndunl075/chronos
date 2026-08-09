@@ -28,6 +28,9 @@ test("source files are included by default", () => {
 
 test("version control state and generated output are ignored", () => {
   const cases = [
+    [".chronos/instruction.txt", ".chronos/"],
+    [".chronos", ".chronos/"],
+    [".ChRoNoS/replay.txt", ".chronos/"],
     [".git/config", ".git/"],
     [".git", ".git/"],
     ["node_modules/left-pad/index.js", "**/node_modules/"],

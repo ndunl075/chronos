@@ -120,9 +120,24 @@ export function readRoutes(repository: ChronosRepository): readonly Route[] {
         const branchId = requiredParam(context, "branchId");
         const branch = guard(() => repository.getBranch(branchId));
         if (branch === undefined) apiError("not_found", "No such branch");
-        const index = indexFor(repository, branch.sessionId);
         const { fromSeq, limit } = pageQuery(context);
         const through = optionalSequence(context, "through");
+        if (branch.state !== "ready") {
+          const candidates = guard(() =>
+            repository.listEventSummaries(branchId, { fromSeq, limit }),
+          );
+          const items =
+            through === undefined
+              ? candidates
+              : candidates.filter((event) => event.seq <= through);
+          const storedTotal = guard(() => repository.countEvents(branchId));
+          const total =
+            through === undefined
+              ? storedTotal
+              : Math.min(storedTotal, through);
+          return { body: page(items, total, nextSeq(items, limit)) };
+        }
+        const index = indexFor(repository, branch.sessionId);
         const visible = guard(() =>
           resolveVisibleEvents(index, branchId, through).map(toSummary),
         );
@@ -139,6 +154,23 @@ export function readRoutes(repository: ChronosRepository): readonly Route[] {
         const branch = guard(() => repository.getBranch(branchId));
         if (branch === undefined) apiError("not_found", "No such branch");
         const seq = requiredSequence(context, "seq");
+        if (branch.state !== "ready") {
+          const event = guard(() =>
+            repository.listEvents(branchId, { fromSeq: seq, limit: 1 }).at(0),
+          );
+          if (event === undefined || event.seq !== seq)
+            apiError("not_found", "No such event");
+          return {
+            body: resource({
+              eventId: event.id,
+              replayability: { status: "replayable" as const },
+              branchability: {
+                status: "unavailable" as const,
+                reason: "branch_not_ready" as const,
+              },
+            }),
+          };
+        }
         const index = indexFor(repository, branch.sessionId);
         return {
           body: resource(
@@ -400,6 +432,16 @@ function appendBody(
     const record = candidate as Record<string, unknown>;
     if (record["branchId"] !== branchId) {
       apiError("bad_request", "An event must name the branch it is posted to");
+    }
+    if (
+      record["kind"] === "tool_call" ||
+      record["kind"] === "tool_result" ||
+      record["kind"] === "filesystem_change"
+    ) {
+      apiError(
+        "bad_request",
+        "Live tool and filesystem events must be written by the record coordinator",
+      );
     }
     const payload = record["payload"];
     if (

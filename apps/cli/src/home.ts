@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
@@ -45,9 +45,18 @@ export function resolveHome(
 /** Create the home directory tree. Doing it twice is a no-op. */
 export function ensureHome(home: ChronosHome): ChronosHome {
   try {
+    assertRealDirectoryIfPresent(home.root);
     mkdirSync(home.root, { recursive: true });
+    assertRealDirectoryIfPresent(home.root);
+    assertRealDirectoryIfPresent(home.storeRoot);
     mkdirSync(home.storeRoot, { recursive: true });
+    assertRealDirectoryIfPresent(home.storeRoot);
+    assertRealDirectoryIfPresent(home.workspacesRoot);
     mkdirSync(home.workspacesRoot, { recursive: true });
+    assertRealDirectoryIfPresent(home.workspacesRoot);
+    chmodSync(home.root, 0o700);
+    chmodSync(home.storeRoot, 0o700);
+    chmodSync(home.workspacesRoot, 0o700);
   } catch (error) {
     failure(
       `Could not prepare the Chronos home directory: ${home.root}`,
@@ -55,4 +64,11 @@ export function ensureHome(home: ChronosHome): ChronosHome {
     );
   }
   return home;
+}
+
+function assertRealDirectoryIfPresent(path: string): void {
+  if (!existsSync(path)) return;
+  const stats = lstatSync(path);
+  if (!stats.isDirectory() || stats.isSymbolicLink())
+    throw new Error(`Chronos directory is not a real directory: ${path}`);
 }

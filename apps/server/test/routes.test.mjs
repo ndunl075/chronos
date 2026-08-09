@@ -63,6 +63,21 @@ function seed(repository) {
       event("c4", "child", 4),
     ]);
   });
+  repository.insertSession({
+    id: "failed-session",
+    source: "codex-record",
+    createdAt: OCCURRED_AT,
+  });
+  repository.insertBranch({
+    id: "failed-root",
+    sessionId: "failed-session",
+    state: "preparing",
+  });
+  repository.appendEvents([
+    event("failed-instruction", "failed-root", 1, "instruction"),
+    event("failed-terminal", "failed-root", 2, "error"),
+  ]);
+  repository.settleBranch("failed-root", "failed");
 }
 
 async function serve(t) {
@@ -110,10 +125,11 @@ test("sessions and their lineage are listed", async (t) => {
   const list = await get(server, "/sessions");
   assert.equal(list.status, 200);
   assert.equal(list.body.schemaVersion, 1);
-  assert.equal(list.body.total, 1);
-  assert.deepEqual(list.body.items, [
-    { id: "s1", source: "chronos-jsonl", createdAt: OCCURRED_AT },
-  ]);
+  assert.equal(list.body.total, 2);
+  assert.deepEqual(
+    list.body.items.map((session) => session.id),
+    ["failed-session", "s1"],
+  );
 
   const overview = await get(server, "/sessions/s1");
   assert.equal(overview.status, 200);
@@ -176,6 +192,25 @@ test("a branch timeline resolves inherited history", async (t) => {
   );
 });
 
+test("failed recording history is readable but never branchable", async (t) => {
+  const server = await serve(t);
+  const timeline = await get(server, "/branches/failed-root/timeline");
+  assert.equal(timeline.status, 200);
+  assert.deepEqual(
+    timeline.body.items.map((event) => event.id),
+    ["failed-instruction", "failed-terminal"],
+  );
+  const capability = await get(
+    server,
+    "/branches/failed-root/events/2/capabilities",
+  );
+  assert.equal(capability.status, 200);
+  assert.deepEqual(capability.body.data.branchability, {
+    status: "unavailable",
+    reason: "branch_not_ready",
+  });
+});
+
 test("an event detail carries its canonical payload", async (t) => {
   const server = await serve(t);
 
@@ -210,10 +245,9 @@ test("checkpoints and capabilities describe what can be branched from", async (t
     branchability: {
       status: "branchable",
       reconstruction: {
-        kind: "checkpoint_plus_deltas",
+        kind: "exact",
         checkpointId: "cp2",
         checkpointEventSeq: 2,
-        deltaEventSeqs: [],
         effectiveRestoreSeq: 3,
       },
     },

@@ -1,14 +1,16 @@
 import { randomUUID } from "node:crypto";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 
 import { fail } from "./errors.js";
 import { blobRef, contentRefEquals, isContentRef } from "./manifest.js";
@@ -47,7 +49,9 @@ export class ContentStore {
     if (!Number.isSafeInteger(maxBlobBytes) || maxBlobBytes < 1) {
       fail("INVALID_OPTIONS", "maxBlobBytes must be a positive integer");
     }
-    this.root = resolve(root);
+    // Resolve aliases before creating the missing suffix, so the store's
+    // durable identity cannot depend on later path spelling or junctions.
+    this.root = canonicalizePotentialPath(root);
     this.maxBlobBytes = maxBlobBytes;
     io(() => {
       mkdirSync(join(this.root, "blobs"), { recursive: true });
@@ -128,12 +132,13 @@ export class ContentStore {
    * inside a workspace would capture its own blobs on the next capture.
    */
   assertOutside(workspaceRoot: string): void {
-    const workspace = resolve(workspaceRoot);
-    if (contains(workspace, this.root) || contains(this.root, workspace)) {
+    const workspace = canonicalizePotentialPath(workspaceRoot);
+    const store = canonicalizePotentialPath(this.root);
+    if (contains(workspace, store) || contains(store, workspace)) {
       fail(
         "UNSAFE_LOCATION",
         "A content store must live outside the inspected workspace",
-        { store: this.root, workspace },
+        { store, workspace },
       );
     }
   }
@@ -141,11 +146,45 @@ export class ContentStore {
 
 /** True when `candidate` is `parent` or nested inside it. */
 export function contains(parent: string, candidate: string): boolean {
-  const left = resolve(parent);
-  const right = resolve(candidate);
+  let left = resolve(parent);
+  let right = resolve(candidate);
+  if (process.platform === "win32") {
+    left = left.toLocaleLowerCase("en-US");
+    right = right.toLocaleLowerCase("en-US");
+  }
   if (left === right) return true;
   const prefix = left.endsWith(sep) ? left : `${left}${sep}`;
   return right.startsWith(prefix);
+}
+
+/**
+ * Canonicalize an existing path, or its nearest existing ancestor plus the
+ * still-missing suffix. This lets callers compare locations safely before a
+ * directory is created and closes aliases through symlinks/junctions.
+ */
+export function canonicalizePotentialPath(path: string): string {
+  const absolute = resolve(path);
+  let existing = absolute;
+  while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) break;
+    existing = parent;
+  }
+  const stats = io(
+    () => lstatSync(existing),
+    `The path could not be inspected: ${existing}`,
+  );
+  // realpath resolves both POSIX symlinks and Windows junction/reparse aliases.
+  const canonicalAncestor = io(
+    () => realpathSync.native(existing),
+    `The path could not be canonicalized: ${existing}`,
+  );
+  const suffix = relative(existing, absolute);
+  const canonical = resolve(canonicalAncestor, suffix);
+  // lstat is intentional: it also forces an error for inaccessible reparse
+  // points before realpath is trusted.
+  void stats;
+  return canonical;
 }
 
 export function isDirectory(path: string): boolean {

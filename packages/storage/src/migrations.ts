@@ -158,11 +158,33 @@ const CREATE_SCHEMA_V1: readonly string[] = [
    END`,
 ];
 
+const ALLOW_PREPARING_RECORDING_EVENTS_V2: readonly string[] = [
+  `DROP TRIGGER event_branch_ready`,
+
+  `CREATE TRIGGER event_branch_ready BEFORE INSERT ON event
+   WHEN (SELECT state FROM branch WHERE id = NEW.branch_id) IS NOT 'ready'
+     AND NOT EXISTS (
+       SELECT 1 FROM branch AS recording_branch
+       JOIN session AS recording_session
+         ON recording_session.id = recording_branch.session_id
+       WHERE recording_branch.id = NEW.branch_id
+         AND recording_branch.parent_id IS NULL
+         AND recording_branch.state = 'preparing'
+         AND recording_session.source IN ('codex-record', 'claude-record')
+     )
+   BEGIN SELECT RAISE(ABORT, 'chronos: only ready branches may own events'); END`,
+];
+
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   Object.freeze({
     version: 1,
     name: "canonical_records",
     statements: Object.freeze(CREATE_SCHEMA_V1),
+  }),
+  Object.freeze({
+    version: 2,
+    name: "preparing_provider_recordings",
+    statements: Object.freeze(ALLOW_PREPARING_RECORDING_EVENTS_V2),
   }),
 ]);
 

@@ -65,6 +65,36 @@ export interface ManifestLimits {
   readonly path?: PathLimits;
 }
 
+/** `ManifestLimits` with every default filled in, ready to enforce as-is. */
+export interface ResolvedManifestLimits {
+  readonly maxFiles: number;
+  readonly maxFileBytes: number;
+  readonly maxTotalBytes: number;
+}
+
+/**
+ * Fill in the defaults `buildManifest` would apply, so a caller that enforces
+ * limits earlier — such as a walker deciding whether to keep reading a
+ * workspace — checks the exact same numbers `buildManifest` checks last.
+ */
+export function resolveManifestLimits(
+  limits: ManifestLimits = {},
+): ResolvedManifestLimits {
+  return Object.freeze({
+    maxFiles: positive(limits.maxFiles, DEFAULT_MAX_FILES, "maxFiles"),
+    maxFileBytes: positive(
+      limits.maxFileBytes,
+      DEFAULT_MAX_FILE_BYTES,
+      "maxFileBytes",
+    ),
+    maxTotalBytes: positive(
+      limits.maxTotalBytes,
+      DEFAULT_MAX_TOTAL_BYTES,
+      "maxTotalBytes",
+    ),
+  });
+}
+
 export interface ManifestFileInput {
   readonly path: string;
   readonly mode?: FileMode;
@@ -118,17 +148,8 @@ export function buildManifest(
   input: ManifestInput,
   limits: ManifestLimits = {},
 ): SnapshotManifest {
-  const maxFiles = positive(limits.maxFiles, DEFAULT_MAX_FILES, "maxFiles");
-  const maxFileBytes = positive(
-    limits.maxFileBytes,
-    DEFAULT_MAX_FILE_BYTES,
-    "maxFileBytes",
-  );
-  const maxTotalBytes = positive(
-    limits.maxTotalBytes,
-    DEFAULT_MAX_TOTAL_BYTES,
-    "maxTotalBytes",
-  );
+  const { maxFiles, maxFileBytes, maxTotalBytes } =
+    resolveManifestLimits(limits);
   const fileInputs = list(input.files, "files");
   const directoryInputs =
     input.directories === undefined

@@ -15,6 +15,7 @@ import {
 import { branchSpec, runBranch } from "./commands/branch.js";
 import { inspectSpec, runInspect } from "./commands/inspect.js";
 import { runServe, serveSpec } from "./commands/serve.js";
+import { recordSpec, runRecord } from "./commands/record.js";
 import { resolveHome } from "./home.js";
 import { Reporter, table, type Streams } from "./output.js";
 
@@ -32,6 +33,7 @@ interface Command {
 
 const COMMANDS: readonly Command[] = Object.freeze([
   { spec: importSpec, run: runImport },
+  { spec: recordSpec, run: runRecord },
   { spec: inspectSpec, run: runInspect },
   { spec: serveSpec, run: runServe },
   { spec: branchSpec, run: runBranch },
@@ -43,6 +45,10 @@ export interface RunEnvironment {
   readonly env: Readonly<Record<string, string | undefined>>;
   /** Aborted to ask a long-running command, such as serve, to stop. */
   readonly signal?: AbortSignal;
+  /** Test/integration seam; normal CLI invocations use child_process.spawn. */
+  readonly providerExecutor?: import("./commands/record.js").ProviderExecutor;
+  /** Test-only canonical executable seam used to exercise replacement checks. */
+  readonly providerExecutable?: string;
 }
 
 /**
@@ -91,6 +97,12 @@ export async function run(
       reporter,
       cwd: environment.cwd,
       signal: environment.signal,
+      ...(environment.providerExecutor === undefined
+        ? {}
+        : { providerExecutor: environment.providerExecutor }),
+      ...(environment.providerExecutable === undefined
+        ? {}
+        : { providerExecutable: environment.providerExecutable }),
     });
     return EXIT_OK;
   } catch (error) {

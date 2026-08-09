@@ -54,6 +54,10 @@ export interface CommandContext {
   readonly cwd: string;
   /** Aborted when the caller asks a long-running command to stop. */
   readonly signal: AbortSignal | undefined;
+  /** Test/integration seam for deterministic provider processes. */
+  readonly providerExecutor?: import("./record.js").ProviderExecutor;
+  /** Test seam: must already be an absolute canonical regular file. */
+  readonly providerExecutable?: string;
 }
 
 /**

@@ -34,6 +34,7 @@ export {
   isContentRef,
   manifestBlobRefs,
   parseManifest,
+  resolveManifestLimits,
   serializeManifest,
   verifyManifest,
   type FileMode,
@@ -43,9 +44,14 @@ export {
   type ManifestFileInput,
   type ManifestInput,
   type ManifestLimits,
+  type ResolvedManifestLimits,
   type SnapshotManifest,
 } from "./manifest.js";
-export { ContentStore, type ContentStoreOptions } from "./store.js";
+export {
+  ContentStore,
+  canonicalizePotentialPath,
+  type ContentStoreOptions,
+} from "./store.js";
 export {
   captureWorkspace,
   type CaptureOptions,

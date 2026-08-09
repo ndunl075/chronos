@@ -115,6 +115,45 @@ test("migrations run once and survive a reopen", (t) => {
   );
 });
 
+test("an actual v1 database migrates before accepting provider recording events", (t) => {
+  const { path, track } = temporaryDatabase(t);
+  const raw = new DatabaseSync(path);
+  try {
+    raw.exec("PRAGMA foreign_keys = ON");
+    for (const statement of MIGRATIONS[0].statements) raw.exec(statement);
+    raw
+      .prepare(
+        `INSERT INTO chronos_migration (version, name, applied_at)
+         VALUES (1, ?, ?)`,
+      )
+      .run(MIGRATIONS[0].name, OCCURRED_AT);
+    raw.exec("PRAGMA user_version = 1");
+    raw.exec(`
+      INSERT INTO session (id, source, created_at)
+      VALUES ('recording', 'claude-record', '${OCCURRED_AT}');
+      INSERT INTO branch (id, session_id, parent_id, fork_seq, state)
+      VALUES ('recording-root', 'recording', NULL, NULL, 'preparing')
+    `);
+    assert.throws(
+      () => insertEvent(raw, "before-v2", "recording-root", 1),
+      /only ready branches may own events/,
+    );
+  } finally {
+    raw.close();
+  }
+
+  const storage = track(openStorage({ path }));
+  assert.equal(storage.schemaVersion, 2);
+  insertEvent(storage._database(), "after-v2", "recording-root", 1);
+  assert.equal(
+    storage
+      ._database()
+      .prepare("SELECT count(*) AS n FROM event WHERE branch_id = ?")
+      .get("recording-root").n,
+    1,
+  );
+});
+
 test("a database written by a newer build is refused", (t) => {
   const { path } = temporaryDatabase(t);
   openStorage({ path }).close();
@@ -392,6 +431,26 @@ test("events extend a contiguous suffix owned by a ready branch", (t) => {
   assert.equal(
     database
       .prepare("SELECT count(*) AS n FROM event WHERE branch_id = 'child'")
+      .get().n,
+    1,
+  );
+});
+
+test("only a preparing provider-recording root may append live events", (t) => {
+  const storage = openMemory(t);
+  const database = storage._database();
+  database.exec(`
+    INSERT INTO session (id, source, created_at)
+    VALUES ('recording', 'codex-record', '${OCCURRED_AT}');
+    INSERT INTO branch (id, session_id, parent_id, fork_seq, state)
+    VALUES ('recording-root', 'recording', NULL, NULL, 'preparing')
+  `);
+  insertEvent(database, "live", "recording-root", 1);
+  assert.equal(
+    database
+      .prepare(
+        "SELECT count(*) AS n FROM event WHERE branch_id = 'recording-root'",
+      )
       .get().n,
     1,
   );
