@@ -39,6 +39,8 @@ export interface CommandContext {
   readonly home: ChronosHome;
   readonly reporter: Reporter;
   readonly cwd: string;
+  /** Aborted when the caller asks a long-running command to stop. */
+  readonly signal: AbortSignal | undefined;
 }
 
 /**

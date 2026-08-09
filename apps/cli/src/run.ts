@@ -13,6 +13,7 @@ import {
   type CommandContext,
 } from "./commands/import.js";
 import { inspectSpec, runInspect } from "./commands/inspect.js";
+import { runServe, serveSpec } from "./commands/serve.js";
 import { resolveHome } from "./home.js";
 import { Reporter, table, type Streams } from "./output.js";
 
@@ -31,12 +32,15 @@ interface Command {
 const COMMANDS: readonly Command[] = Object.freeze([
   { spec: importSpec, run: runImport },
   { spec: inspectSpec, run: runInspect },
+  { spec: serveSpec, run: runServe },
 ]);
 
 export interface RunEnvironment {
   readonly streams: Streams;
   readonly cwd: string;
   readonly env: Readonly<Record<string, string | undefined>>;
+  /** Aborted to ask a long-running command, such as serve, to stop. */
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -84,6 +88,7 @@ export async function run(
       }),
       reporter,
       cwd: environment.cwd,
+      signal: environment.signal,
     });
     return EXIT_OK;
   } catch (error) {

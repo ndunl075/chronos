@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 import { ChronosRepository, openStorage } from "@chronos/storage";
@@ -50,10 +51,11 @@ function sandbox(t) {
   };
 }
 
-async function cli(box, argv) {
+async function cli(box, argv, signal) {
   const out = [];
   const err = [];
   const exitCode = await run(argv, {
+    ...(signal === undefined ? {} : { signal }),
     streams: {
       write: (text) => out.push(text),
       writeError: (text) => err.push(text),
@@ -371,4 +373,75 @@ test("inspect shows one event without running anything", async (t) => {
     "b_root",
   ]);
   assert.equal(conflicting.exitCode, 2);
+});
+
+test("serve runs the API until it is asked to stop", async (t) => {
+  const box = sandbox(t);
+  await cli(box, ["import", box.file("session.jsonl", FIXTURE)]);
+
+  const stopping = new AbortController();
+  const running = cli(box, ["serve", "--json"], stopping.signal);
+
+  // The server is up as soon as the result is printed, so read it by polling
+  // the promise's resolution rather than guessing at a delay.
+  const finished = (async () => {
+    const result = await running;
+    return JSON.parse(result.out.split("\n").slice(0).join("\n"));
+  })();
+
+  stopping.abort();
+  const served = await finished;
+
+  assert.match(served.url, /^http:\/\/127\.0\.0\.1:\d+$/);
+  assert.equal(served.host, "127.0.0.1");
+  assert.equal(served.token.length >= 32, true);
+  assert.equal(served.databasePath, join(box.home, "chronos.sqlite"));
+  assert.equal(served.workspacesRoot, join(box.home, "workspaces"));
+});
+
+test("serve answers the API it advertises", async (t) => {
+  const box = sandbox(t);
+  await cli(box, ["import", box.file("session.jsonl", FIXTURE)]);
+
+  const stopping = new AbortController();
+  const out = [];
+  const running = run(["serve", "--json"], {
+    streams: {
+      write: (text) => out.push(text),
+      writeError: () => undefined,
+    },
+    cwd: box.root,
+    env: { CHRONOS_HOME: box.home },
+    signal: stopping.signal,
+  });
+
+  // Wait for the server to advertise itself before calling it.
+  while (out.length === 0) await delay(5);
+  const served = JSON.parse(out.join(""));
+
+  const sessions = await fetch(`${served.url}/sessions`, {
+    headers: { authorization: `Bearer ${served.token}` },
+  });
+  assert.equal(sessions.status, 200);
+  assert.deepEqual(
+    (await sessions.json()).items.map((item) => item.id),
+    ["s_upload"],
+  );
+
+  const unauthorized = await fetch(`${served.url}/sessions`);
+  assert.equal(unauthorized.status, 401);
+
+  stopping.abort();
+  assert.equal(await running, 0);
+
+  // The port is released once the command returns.
+  await assert.rejects(() => fetch(`${served.url}/sessions`));
+});
+
+test("serve reports a port it cannot use", async (t) => {
+  const box = sandbox(t);
+
+  const badPort = await cli(box, ["serve", "--port", "99999"]);
+  assert.equal(badPort.exitCode, 2);
+  assert.match(badPort.err, /--port must be an integer/);
 });
