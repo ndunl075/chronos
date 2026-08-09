@@ -230,3 +230,145 @@ test("a session is never imported twice", async (t) => {
 
   assert.equal(box.read().listSessions().length, 1);
 });
+
+test("inspect lists what has been imported", async (t) => {
+  const box = sandbox(t);
+  const path = box.file("session.jsonl", FIXTURE);
+
+  const empty = await cli(box, ["inspect"]);
+  assert.equal(empty.exitCode, 1);
+  assert.match(empty.err, /No Chronos database/);
+
+  await cli(box, ["import", path]);
+
+  const list = await cli(box, ["inspect"]);
+  assert.equal(list.exitCode, 0);
+  assert.match(list.out, /^SESSION\s+SOURCE\s+CREATED\s+BRANCHES\s+EVENTS/m);
+  assert.match(list.out, /s_upload\s+chronos-jsonl\s+\S+\s+2\s+6/);
+
+  const json = JSON.parse((await cli(box, ["inspect", "--json"])).out);
+  assert.deepEqual(json.sessions, [
+    {
+      id: "s_upload",
+      source: "chronos-jsonl",
+      createdAt: "2026-08-09T00:00:00Z",
+      branches: 2,
+      events: 6,
+    },
+  ]);
+});
+
+test("inspect describes a session's lineage", async (t) => {
+  const box = sandbox(t);
+  await cli(box, ["import", box.file("session.jsonl", FIXTURE)]);
+
+  const overview = await cli(box, ["inspect", "s_upload"]);
+  assert.equal(overview.exitCode, 0);
+  assert.match(overview.out, /Session s_upload/);
+  assert.match(overview.out, /b_root\s+ready\s+\(root\)\s+4\s+1/);
+  assert.match(overview.out, /b_retry\s+ready\s+b_root@3\s+2\s+1/);
+
+  const missing = await cli(box, ["inspect", "nope"]);
+  assert.equal(missing.exitCode, 1);
+  assert.match(missing.err, /No such session: nope/);
+});
+
+test("inspect shows a branch timeline with inherited history", async (t) => {
+  const box = sandbox(t);
+  await cli(box, ["import", box.file("session.jsonl", FIXTURE)]);
+
+  const timeline = await cli(box, ["inspect", "--branch", "b_retry"]);
+  assert.equal(timeline.exitCode, 0);
+  assert.match(timeline.out, /Branch b_retry \(5 events visible\)/);
+  assert.match(timeline.out, /instruction \(inherited\)/);
+  assert.match(timeline.out, /\* marks an event a branch can be created from/);
+
+  const json = JSON.parse(
+    (await cli(box, ["inspect", "--branch", "b_retry", "--json"])).out,
+  );
+  assert.deepEqual(
+    json.events.map((event) => [event.seq, event.inherited, event.branchable]),
+    [
+      [1, true, false],
+      [2, true, false],
+      [3, true, true],
+      [4, false, true],
+      [5, false, true],
+    ],
+  );
+  assert.equal(json.events[0].reason, "no_checkpoint");
+  assert.equal(json.events[2].reason, undefined);
+});
+
+test("a timeline pages and validates its window", async (t) => {
+  const box = sandbox(t);
+  await cli(box, ["import", box.file("session.jsonl", FIXTURE)]);
+
+  const firstPage = await cli(box, [
+    "inspect",
+    "--branch",
+    "b_retry",
+    "--limit",
+    "2",
+    "--json",
+  ]);
+  assert.deepEqual(
+    JSON.parse(firstPage.out).events.map((event) => event.seq),
+    [1, 2],
+  );
+
+  const secondPage = await cli(box, [
+    "inspect",
+    "--branch",
+    "b_retry",
+    "--from",
+    "3",
+    "--json",
+  ]);
+  assert.deepEqual(
+    JSON.parse(secondPage.out).events.map((event) => event.seq),
+    [3, 4, 5],
+  );
+
+  assert.match(
+    (await cli(box, ["inspect", "--branch", "b_retry", "--limit", "2"])).out,
+    /continue with --from 3/,
+  );
+
+  for (const bad of [
+    ["--limit", "0"],
+    ["--limit", "5000"],
+    ["--from", "0"],
+    ["--from", "x"],
+  ]) {
+    const response = await cli(box, ["inspect", "--branch", "b_retry", ...bad]);
+    assert.equal(response.exitCode, 2, bad.join(" "));
+  }
+
+  const unknownBranch = await cli(box, ["inspect", "--branch", "nope"]);
+  assert.equal(unknownBranch.exitCode, 1);
+});
+
+test("inspect shows one event without running anything", async (t) => {
+  const box = sandbox(t);
+  await cli(box, ["import", box.file("session.jsonl", FIXTURE)]);
+
+  const detail = await cli(box, ["inspect", "--event", "e2"]);
+  assert.equal(detail.exitCode, 0);
+  assert.match(detail.out, /Event e2/);
+  assert.match(detail.out, /kind {6}tool_call/);
+  assert.match(detail.out, /"path": "src\/upload\.ts"/);
+  assert.match(detail.out, /Chronos displays it and never runs it/);
+
+  const missing = await cli(box, ["inspect", "--event", "nope"]);
+  assert.equal(missing.exitCode, 1);
+
+  const conflicting = await cli(box, [
+    "inspect",
+    "--event",
+    "e2",
+    "--branch",
+    "b_root",
+  ]);
+  assert.equal(conflicting.exitCode, 2);
+});

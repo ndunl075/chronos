@@ -12,6 +12,7 @@ import {
   runImport,
   type CommandContext,
 } from "./commands/import.js";
+import { inspectSpec, runInspect } from "./commands/inspect.js";
 import { resolveHome } from "./home.js";
 import { Reporter, table, type Streams } from "./output.js";
 
@@ -29,6 +30,7 @@ interface Command {
 
 const COMMANDS: readonly Command[] = Object.freeze([
   { spec: importSpec, run: runImport },
+  { spec: inspectSpec, run: runInspect },
 ]);
 
 export interface RunEnvironment {
