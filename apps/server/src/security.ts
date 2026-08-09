@@ -78,11 +78,13 @@ export function isAllowedOrigin(
   return isLoopbackHost(url.hostname);
 }
 
-/** Refuse a request that could not have come from this machine's own client. */
-export function assertTrustedRequest(
+/**
+ * Refuse a request that could not have come from this machine's own client.
+ * This applies to every request, including the ones that carry no token.
+ */
+export function assertTrustedOrigin(
   headers: Readonly<Record<string, string | undefined>>,
   port: number,
-  token: string,
 ): void {
   if (!isAllowedHost(headers["host"], port)) {
     apiError("forbidden", "The request was not addressed to this server");
@@ -90,7 +92,23 @@ export function assertTrustedRequest(
   if (!isAllowedOrigin(headers["origin"], port)) {
     apiError("forbidden", "Cross-origin requests are not accepted");
   }
+}
+
+export function assertToken(
+  headers: Readonly<Record<string, string | undefined>>,
+  token: string,
+): void {
   if (!tokensMatch(bearerToken(headers["authorization"]), token)) {
     apiError("unauthorized", "A valid bearer token is required");
   }
+}
+
+/** Refuse anything that is not a fully trusted, authenticated request. */
+export function assertTrustedRequest(
+  headers: Readonly<Record<string, string | undefined>>,
+  port: number,
+  token: string,
+): void {
+  assertTrustedOrigin(headers, port);
+  assertToken(headers, token);
 }

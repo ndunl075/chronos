@@ -407,6 +407,10 @@ test("serve runs the API until it is asked to stop", async (t) => {
   assert.match(served.url, /^http:\/\/127\.0\.0\.1:\d+$/);
   assert.equal(served.host, "127.0.0.1");
   assert.equal(served.token.length >= 32, true);
+  assert.equal(
+    served.browserUrl,
+    `${served.url}/?token=${encodeURIComponent(served.token)}`,
+  );
   assert.equal(served.databasePath, join(box.home, "chronos.sqlite"));
   assert.equal(served.workspacesRoot, join(box.home, "workspaces"));
 });
@@ -442,6 +446,10 @@ test("serve answers the API it advertises", async (t) => {
 
   const unauthorized = await fetch(`${served.url}/sessions`);
   assert.equal(unauthorized.status, 401);
+
+  const page = await fetch(served.browserUrl);
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /Chronos — Session Instrument/);
 
   stopping.abort();
   assert.equal(await running, 0);

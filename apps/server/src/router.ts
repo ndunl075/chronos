@@ -18,8 +18,24 @@ export interface JsonResult {
   readonly body: unknown;
 }
 
-/** A handler answers with a body, or takes over the connection to stream. */
-export type HandlerResult = JsonResult | StreamResult;
+/** Bytes with a declared type, for the few responses that are not JSON. */
+export interface FileResult {
+  readonly kind: "file";
+  readonly contentType: string;
+  readonly body: Uint8Array;
+  readonly headers?: Readonly<Record<string, string>>;
+}
+
+/** A handler answers with a body or bytes, or takes over the connection. */
+export type HandlerResult = JsonResult | FileResult | StreamResult;
+
+export function isFileResult(value: unknown): value is FileResult {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    (value as { kind?: unknown }).kind === "file"
+  );
+}
 
 export type RouteHandler = (
   context: RequestContext,
@@ -27,20 +43,31 @@ export type RouteHandler = (
 
 export interface Route {
   readonly method: HttpMethod;
-  /** A path with literal segments and `:name` parameters. */
+  /**
+   * A path of literal segments, `:name` parameters, and an optional final
+   * `*` capturing the rest of the path into the `*` parameter.
+   */
   readonly path: string;
   readonly handler: RouteHandler;
+  /**
+   * Reachable without a bearer token. Only the page assets are: a browser
+   * navigating to a URL cannot send an Authorization header, and the assets
+   * carry no session data. Everything else stays behind the token.
+   */
+  readonly public?: boolean;
 }
 
 interface CompiledRoute {
   readonly method: HttpMethod;
   readonly segments: readonly string[];
   readonly handler: RouteHandler;
+  readonly public: boolean;
 }
 
 export interface RouteMatch {
   readonly handler: RouteHandler;
   readonly params: Readonly<Record<string, string>>;
+  readonly public: boolean;
 }
 
 /**
@@ -61,6 +88,7 @@ export class Router {
           method: route.method,
           segments: Object.freeze(route.path.split("/").slice(1)),
           handler: route.handler,
+          public: route.public === true,
         });
       }),
     );
@@ -76,7 +104,7 @@ export class Router {
       if (params === undefined) continue;
       pathMatched = true;
       if (route.method !== method) continue;
-      return { handler: route.handler, params };
+      return { handler: route.handler, params, public: route.public };
     }
     if (pathMatched) {
       apiError("method_not_allowed", "That method is not allowed on this path");
@@ -89,10 +117,24 @@ function match(
   pattern: readonly string[],
   actual: readonly string[],
 ): Readonly<Record<string, string>> | undefined {
-  if (pattern.length !== actual.length) return undefined;
+  const wildcard = pattern.at(-1) === "*";
+  if (wildcard) {
+    if (actual.length < pattern.length) return undefined;
+  } else if (pattern.length !== actual.length) {
+    return undefined;
+  }
   const params: Record<string, string> = {};
   for (let index = 0; index < pattern.length; index += 1) {
     const expected = pattern[index]!;
+    if (expected === "*") {
+      const rest = actual.slice(index);
+      try {
+        params["*"] = rest.map((part) => decodeURIComponent(part)).join("/");
+      } catch {
+        return undefined;
+      }
+      break;
+    }
     const found = actual[index]!;
     if (expected.startsWith(":")) {
       if (found.length === 0) return undefined;

@@ -9,7 +9,7 @@
   "exports": "./dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test test/server.test.mjs test/routes.test.mjs test/stream.test.mjs test/branching.test.mjs",
+    "test": "npm run build && node --test test/server.test.mjs test/routes.test.mjs test/stream.test.mjs test/branching.test.mjs test/assets.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json"
   },
   "dependencies": {

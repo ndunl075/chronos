@@ -1,11 +1,14 @@
 import { ContentStore } from "@chronos/snapshots";
 import { ServerConfigError, startServer } from "@chronos/server";
 import { ChronosRepository, openStorage } from "@chronos/storage";
+import { fileURLToPath } from "node:url";
 
 import { stringFlag, type CommandSpec, type ParsedArgs } from "../args.js";
 import { failure, usageError } from "../errors.js";
 import { ensureHome } from "../home.js";
 import type { CommandContext } from "./import.js";
+
+const WEB_ROOT = fileURLToPath(new URL("../../../web/", import.meta.url));
 
 export const serveSpec: CommandSpec = {
   name: "serve",
@@ -41,12 +44,20 @@ export async function runServe(
   try {
     const repository = new ChronosRepository(storage);
     const store = new ContentStore({ root: home.storeRoot });
-    const server = await start(repository, store, home.workspacesRoot, port);
+    const server = await start(
+      repository,
+      store,
+      home.workspacesRoot,
+      WEB_ROOT,
+      port,
+    );
+    const browserUrl = `${server.url}/?token=${encodeURIComponent(server.token)}`;
 
     context.reporter.line(`Chronos is serving ${server.url}`);
     context.reporter.line(`  token      ${server.token}`);
     context.reporter.line(`  database   ${home.databasePath}`);
     context.reporter.line(`  workspaces ${home.workspacesRoot}`);
+    context.reporter.line(`  browser    ${browserUrl}`);
     context.reporter.line();
     context.reporter.line(
       "Send the token as: Authorization: Bearer <token>. Press Ctrl+C to stop.",
@@ -56,6 +67,7 @@ export async function runServe(
       host: server.host,
       port: server.port,
       token: server.token,
+      browserUrl,
       databasePath: home.databasePath,
       workspacesRoot: home.workspacesRoot,
     });
@@ -72,12 +84,14 @@ async function start(
   repository: ChronosRepository,
   store: ContentStore,
   workspacesRoot: string,
+  webRoot: string,
   port: number | undefined,
 ): ReturnType<typeof startServer> {
   try {
     return await startServer({
       repository,
       branching: { store, workspacesRoot },
+      web: { root: webRoot },
       ...(port === undefined ? {} : { port }),
     });
   } catch (error) {

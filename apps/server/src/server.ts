@@ -10,9 +10,10 @@ import { PROTOCOL_SCHEMA_VERSION, type ServerInfo } from "@chronos/protocol";
 import type { ChronosRepository } from "@chronos/storage";
 
 import { ApiError, apiError, toApiError } from "./errors.js";
+import { webRoutes, type WebAssetOptions } from "./assets.js";
 import { branchRoutes, type BranchingOptions } from "./branching.js";
 import { readRoutes, writeRoutes } from "./routes.js";
-import { Router, type HttpMethod, type Route } from "./router.js";
+import { Router, isFileResult, type HttpMethod, type Route } from "./router.js";
 import {
   EventBroadcaster,
   createSseWriter,
@@ -20,7 +21,8 @@ import {
   type StreamResult,
 } from "./stream.js";
 import {
-  assertTrustedRequest,
+  assertToken,
+  assertTrustedOrigin,
   generateToken,
   isLoopbackHost,
 } from "./security.js";
@@ -52,6 +54,8 @@ export interface ServerOptions {
   readonly heartbeatMs?: number;
   /** Mounts the branch endpoint. Without it, branching is simply not served. */
   readonly branching?: BranchingOptions;
+  /** Serves the browser UI from this origin. Those routes need no token. */
+  readonly web?: WebAssetOptions;
   readonly routes?: readonly Route[];
 }
 
@@ -115,6 +119,8 @@ export async function startServer(
             : branchRoutes(options.repository, broadcaster, options.branching)),
         ]),
     ...(options.routes ?? []),
+    // Mounted last: an API path always wins over a file of the same name.
+    ...(options.web === undefined ? [] : webRoutes(options.web)),
   ]);
   const server = createServer((request, response) => {
     void handle(request, response, {
@@ -171,14 +177,18 @@ async function handle(
   state: HandlerState,
 ): Promise<void> {
   try {
-    assertTrustedRequest(
+    // Host and Origin are checked for every request, including page assets:
+    // a rebound hostname is refused before anything else is considered.
+    assertTrustedOrigin(
       request.headers as Readonly<Record<string, string | undefined>>,
       state.port(),
-      state.token,
     );
     const target = request.url ?? "";
     if (target.length > DEFAULT_MAX_URL_LENGTH) {
       apiError("bad_request", "The request target is too long");
+    }
+    if (!target.startsWith("/") || target.startsWith("//")) {
+      apiError("bad_request", "The request target is not a local path");
     }
     const method = request.method ?? "";
     if (!SUPPORTED_METHODS.includes(method)) {
@@ -186,6 +196,12 @@ async function handle(
     }
     const url = new URL(target, "http://chronos.invalid");
     const match = state.router.resolve(method, url.pathname);
+    if (!match.public) {
+      assertToken(
+        request.headers as Readonly<Record<string, string | undefined>>,
+        state.token,
+      );
+    }
     const body =
       method === "POST"
         ? await readJsonBody(request, state.maxRequestBytes)
@@ -199,6 +215,10 @@ async function handle(
     });
     if (isStreamResult(result)) {
       stream(request, response, result, state.heartbeatMs);
+      return;
+    }
+    if (isFileResult(result)) {
+      sendFile(response, result, request);
       return;
     }
     send(response, result.status ?? 200, result.body, request);
@@ -298,6 +318,25 @@ function send(
   response.end(payload, () => {
     if (abandoned) request.destroy();
   });
+}
+
+function sendFile(
+  response: ServerResponse,
+  result: import("./router.js").FileResult,
+  request: IncomingMessage,
+): void {
+  if (response.writableEnded) return;
+  const abandoned = !request.readableEnded;
+  response.writeHead(200, {
+    "content-type": result.contentType,
+    "content-length": String(result.body.byteLength),
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+    vary: "Origin",
+    ...result.headers,
+    ...(abandoned ? { connection: "close" } : {}),
+  });
+  response.end(result.body);
 }
 
 function listen(server: Server, host: string, port: number): Promise<void> {

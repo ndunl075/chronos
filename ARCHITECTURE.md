@@ -109,7 +109,7 @@ Each verified vertical feature slice gets a meaningful commit and push; a phase 
 
 ### Delivered Web slice
 
-`apps/web` now provides a dependency-free, same-origin timeline instrument over the authenticated API: session/branch selection, paged visible history, transcript scrubbing, lazy event payload and capability inspection, and a branch composer that remains disabled at non-reconstructable events. It stores the per-run bearer token in session storage only and makes launch a separate action. Static serving and live SSE refresh remain server/CLI integration work.
+`apps/web` now provides a dependency-free, same-origin timeline instrument over the authenticated API: session/branch selection, paged visible history, transcript scrubbing, lazy event payload and capability inspection, and a branch composer that remains disabled at non-reconstructable events. `chronos serve` hosts those inert assets publicly from the protected loopback origin and prints a tokenized browser URL; the token moves to session storage immediately, while every record endpoint remains authenticated. Live SSE refresh remains future integration work.
 
 ## Phase checklist
 

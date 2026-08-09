@@ -8,6 +8,8 @@ export {
   type RouteHandler,
 } from "./router.js";
 export {
+  assertToken,
+  assertTrustedOrigin,
   assertTrustedRequest,
   bearerToken,
   generateToken,
@@ -22,6 +24,7 @@ export {
   type BranchingOptions,
 } from "./branching.js";
 export { readRoutes, writeRoutes, type SessionOverview } from "./routes.js";
+export { webRoutes, type WebAssetOptions } from "./assets.js";
 export {
   EventBroadcaster,
   appendedNotice,
