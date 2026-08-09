@@ -205,6 +205,38 @@ export function logicalSequence(value: unknown): LogicalSequence {
   return value;
 }
 
+/**
+ * True for an RFC 3339 timestamp with `Z` or a numeric UTC offset. Every
+ * record timestamp that crosses the protocol boundary is validated with this.
+ */
+export function isRfc3339Timestamp(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/.exec(
+      value,
+    );
+  if (match === null) return false;
+  const [, year, month, day, hour, minute, second, , offsetHour, offsetMinute] =
+    match;
+  const y = Number(year);
+  const m = Number(month);
+  const d = Number(day);
+  if (
+    m < 1 ||
+    m > 12 ||
+    d < 1 ||
+    d > new Date(Date.UTC(y, m, 0)).getUTCDate() ||
+    Number(hour) > 23 ||
+    Number(minute) > 59 ||
+    Number(second) > 59 ||
+    (offsetHour !== undefined && Number(offsetHour) > 23) ||
+    (offsetMinute !== undefined && Number(offsetMinute) > 59)
+  ) {
+    return false;
+  }
+  return Number.isFinite(Date.parse(value));
+}
+
 /** JSON-compatible data excludes class instances, sparse arrays, and cycles. */
 export function isJsonValue(value: unknown): value is JsonValue {
   try {

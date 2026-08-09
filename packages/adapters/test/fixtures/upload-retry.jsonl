@@ -1,0 +1,11 @@
+{"type":"session","schemaVersion":1,"id":"s_upload","source":"chronos-jsonl","createdAt":"2026-08-09T00:00:00Z"}
+{"type":"branch","schemaVersion":1,"id":"b_root"}
+{"type":"event","schemaVersion":1,"id":"e1","branchId":"b_root","seq":1,"kind":"instruction","occurredAt":"2026-08-09T00:00:00Z","summary":"Fix the flaky upload test","payload":{"text":"Fix the flaky upload test"}}
+{"type":"event","schemaVersion":1,"id":"e2","branchId":"b_root","seq":2,"kind":"tool_call","occurredAt":"2026-08-09T00:00:04Z","summary":"Read src/upload.ts","payload":{"tool":"read_file","arguments":{"path":"src/upload.ts"}}}
+{"type":"event","schemaVersion":1,"id":"e3","branchId":"b_root","seq":3,"kind":"filesystem_change","occurredAt":"2026-08-09T00:00:09Z","summary":"Wrote src/upload.ts","payload":{"paths":["src/upload.ts"],"added":0,"modified":1,"removed":0},"raw":{"ref":"raw/e3.json","mediaType":"application/json","sourceSchemaVersion":"chronos-demo-1"}}
+{"type":"checkpoint","schemaVersion":1,"id":"cp3","branchId":"b_root","eventSeq":3,"manifestRef":"sha256:11c4f0b0a1"}
+{"type":"event","schemaVersion":1,"id":"e4","branchId":"b_root","seq":4,"kind":"assistant_message","occurredAt":"2026-08-09T00:00:14Z","summary":"Added a fixed 3 second sleep","payload":{"text":"I added a fixed 3 second sleep before the assertion."}}
+{"type":"branch","schemaVersion":1,"id":"b_retry","parentId":"b_root","forkSeq":3}
+{"type":"event","schemaVersion":1,"id":"r4","branchId":"b_retry","seq":4,"kind":"instruction","occurredAt":"2026-08-09T00:05:00Z","summary":"Retry with a real backoff instead of a sleep","payload":{"text":"Retry with a real backoff instead of a sleep"}}
+{"type":"event","schemaVersion":1,"id":"r5","branchId":"b_retry","seq":5,"kind":"filesystem_change","occurredAt":"2026-08-09T00:05:12Z","summary":"Wrote src/upload.ts","payload":{"paths":["src/upload.ts"],"added":0,"modified":1,"removed":0}}
+{"type":"checkpoint","schemaVersion":1,"id":"cp5","branchId":"b_retry","eventSeq":5,"manifestRef":"sha256:9de2ab7710"}

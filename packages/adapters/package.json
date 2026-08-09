@@ -9,7 +9,13 @@
   "exports": "./dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node --test",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "test": "npm run build && node --test test/chronos-jsonl.test.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "@chronos/protocol": "0.0.0"
+  },
+  "devDependencies": {
+    "@chronos/core": "0.0.0"
   }
 }

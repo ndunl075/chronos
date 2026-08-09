@@ -3,6 +3,7 @@ import {
   PROTOCOL_SCHEMA_VERSION,
   isCanonicalEnvelope,
   isLogicalSequence,
+  isRfc3339Timestamp,
   type Branch,
   type BranchabilityUnavailableReason,
   type Checkpoint,
@@ -967,35 +968,10 @@ function requiredTimestamp(
   code: CoreErrorCode,
 ): string {
   const value = requiredString(record, key, code);
-  if (!isRfc3339(value)) fail(code, `${key} must be an RFC 3339 timestamp`);
-  return value;
-}
-
-function isRfc3339(value: string): boolean {
-  const match =
-    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/.exec(
-      value,
-    );
-  if (match === null) return false;
-  const [, year, month, day, hour, minute, second, , offsetHour, offsetMinute] =
-    match;
-  const y = Number(year);
-  const m = Number(month);
-  const d = Number(day);
-  if (
-    m < 1 ||
-    m > 12 ||
-    d < 1 ||
-    d > new Date(Date.UTC(y, m, 0)).getUTCDate() ||
-    Number(hour) > 23 ||
-    Number(minute) > 59 ||
-    Number(second) > 59 ||
-    (offsetHour !== undefined && Number(offsetHour) > 23) ||
-    (offsetMinute !== undefined && Number(offsetMinute) > 59)
-  ) {
-    return false;
+  if (!isRfc3339Timestamp(value)) {
+    fail(code, `${key} must be an RFC 3339 timestamp`);
   }
-  return Number.isFinite(Date.parse(value));
+  return value;
 }
 
 function safeArray(

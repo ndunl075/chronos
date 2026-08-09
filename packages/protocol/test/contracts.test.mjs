@@ -7,6 +7,7 @@ import {
   isCanonicalEnvelope,
   isJsonValue,
   isLogicalSequence,
+  isRfc3339Timestamp,
   logicalSequence,
 } from "../dist/index.js";
 
@@ -128,4 +129,19 @@ test("canonical envelope guard is total for hostile and inherited input", () => 
     data: { value: null },
   });
   assert.equal(isCanonicalEnvelope(nonEnumerable), false);
+});
+
+test("RFC 3339 timestamps are validated down to the calendar", () => {
+  assert.equal(isRfc3339Timestamp("2026-08-09T00:00:00Z"), true);
+  assert.equal(isRfc3339Timestamp("2026-08-09T00:00:00.123456Z"), true);
+  assert.equal(isRfc3339Timestamp("2026-08-09T00:00:00-04:00"), true);
+  assert.equal(isRfc3339Timestamp("2024-02-29T00:00:00Z"), true);
+
+  assert.equal(isRfc3339Timestamp("2026-02-29T00:00:00Z"), false);
+  assert.equal(isRfc3339Timestamp("2026-13-01T00:00:00Z"), false);
+  assert.equal(isRfc3339Timestamp("2026-08-09T24:00:00Z"), false);
+  assert.equal(isRfc3339Timestamp("2026-08-09T00:00:00+24:00"), false);
+  assert.equal(isRfc3339Timestamp("2026-08-09 00:00:00Z"), false);
+  assert.equal(isRfc3339Timestamp("2026-08-09T00:00:00"), false);
+  assert.equal(isRfc3339Timestamp(20260809), false);
 });
