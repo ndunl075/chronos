@@ -16,6 +16,11 @@ export {
   isLoopbackHost,
   tokensMatch,
 } from "./security.js";
+export {
+  branchRoutes,
+  type BranchCreated,
+  type BranchingOptions,
+} from "./branching.js";
 export { readRoutes, writeRoutes, type SessionOverview } from "./routes.js";
 export {
   EventBroadcaster,

@@ -175,7 +175,8 @@ function toSummary(event: Event): EventSummary {
   };
 }
 
-function resource<Data>(data: Data): ApiResource<Data> {
+/** @internal Shared by the route modules. */
+export function resource<Data>(data: Data): ApiResource<Data> {
   return { schemaVersion: PROTOCOL_SCHEMA_VERSION, data };
 }
 
@@ -223,7 +224,8 @@ function pageQuery(context: RequestContext): {
   return { fromSeq, limit };
 }
 
-function requiredParam(context: RequestContext, name: string): string {
+/** @internal */
+export function requiredParam(context: RequestContext, name: string): string {
   const value = context.params[name];
   if (typeof value !== "string" || value.trim().length === 0) {
     apiError("bad_request", `${name} is required`);
@@ -267,7 +269,8 @@ function optionalSequence(
 }
 
 /** Translate the layers below into status codes a client can act on. */
-function guard<T>(work: () => T): T {
+/** @internal Translate the layers below into status codes. */
+export function guard<T>(work: () => T): T {
   try {
     return work();
   } catch (error) {

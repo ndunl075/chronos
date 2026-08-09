@@ -10,6 +10,7 @@ import { PROTOCOL_SCHEMA_VERSION, type ServerInfo } from "@chronos/protocol";
 import type { ChronosRepository } from "@chronos/storage";
 
 import { ApiError, apiError, toApiError } from "./errors.js";
+import { branchRoutes, type BranchingOptions } from "./branching.js";
 import { readRoutes, writeRoutes } from "./routes.js";
 import { Router, type HttpMethod, type Route } from "./router.js";
 import {
@@ -49,6 +50,8 @@ export interface ServerOptions {
   readonly repository?: ChronosRepository;
   /** Milliseconds between stream keep-alive comments. Defaults to 15000. */
   readonly heartbeatMs?: number;
+  /** Mounts the branch endpoint. Without it, branching is simply not served. */
+  readonly branching?: BranchingOptions;
   readonly routes?: readonly Route[];
 }
 
@@ -107,6 +110,9 @@ export async function startServer(
       : [
           ...readRoutes(options.repository),
           ...writeRoutes(options.repository, broadcaster),
+          ...(options.branching === undefined
+            ? []
+            : branchRoutes(options.repository, broadcaster, options.branching)),
         ]),
     ...(options.routes ?? []),
   ]);
