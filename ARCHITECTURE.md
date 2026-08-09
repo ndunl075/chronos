@@ -38,7 +38,7 @@ CLI -> localhost API/SSE -> timeline UI
 | `packages/branching` | The one branch workflow: plan, restore, settle, instruct |
 | `apps/server`        | Loopback HTTP API and SSE event stream                   |
 | `apps/web`           | Virtualized transcript, scrubber, branch composer        |
-| `apps/cli`           | `import`, `inspect`, `serve`, and `branch` workflows     |
+| `apps/cli`           | Import, record, inspect, serve, branch, and launch        |
 
 ## Canonical records
 
@@ -79,7 +79,7 @@ type LaunchPlan = {
 ## Key flows
 
 1. **Import:** adapter parses a documented source -> validates/redacts normalized events -> optionally stores an encrypted raw envelope -> links source-provided snapshots/patches. Events without reconstructable state are visibly non-branchable.
-2. **Capture/scrub:** live capture snapshots after each filesystem-mutating tool event. The UI pages summaries and lazily shows details plus exact/nearest-prior checkpoint and effective restore sequence. A nearest-prior checkpoint is valid only when recorded deltas can reach the target; transcript replay never changes files.
+2. **Capture/scrub:** live recording starts with a baseline checkpoint and conservatively snapshots after every completed tool action. The UI pages summaries and lazily shows details plus the effective restore sequence. v0.1 branches only when the latest verified checkpoint reaches the target without an intervening mutation; persisted delta artifacts are post-v0.1. Transcript replay never changes files.
 3. **Branch:** insert `preparing` lineage -> restore to a staging directory -> verify manifest -> atomically rename -> transactionally append the new instruction and mark `ready`. Failure marks the branch `failed`; retry uses a fresh staging path and cleanup is idempotent. Creating a branch never runs imported commands; launching the new instruction needs separate confirmation.
 4. **Live view:** server appends events transactionally and broadcasts event IDs over SSE; clients fetch canonical records.
 
@@ -100,10 +100,10 @@ Each verified vertical feature slice gets a meaningful commit and push; a phase 
 2. **Protocol/core:** versioned schemas; immutable records, lineage traversal, replay/branch planning, tests.
 3. **Storage:** SQLite schema, migrations, state transitions, repositories, integration tests.
 4. **Import:** documented Chronos JSONL and fixtures; real adapters only from observed formats.
-5. **Snapshots/capture:** safe content-addressed manifests, capture cadence, deltas, restore, limits.
+5. **Snapshots/capture:** safe content-addressed manifests, exact-checkpoint capture cadence, restore, limits; serialized deltas are post-v0.1.
 6. **API:** authenticated sessions/events/checkpoints/branch endpoints plus SSE.
 7. **Web:** paged virtual timeline, replayability status, scrubber, details, branch composer.
-8. **CLI:** import/inspect/serve/branch commands and launch-plan output.
+8. **CLI:** import/record/inspect/serve/branch/launch commands and launch-plan output.
 9. **End to end:** import -> scrub -> restore -> child instruction scenario.
 10. **Release:** CI, threat model, contributor/security reporting docs, versioned formats.
 
@@ -122,3 +122,18 @@ For every phase: read the dependency's official/local docs; copy documented APIs
 - The first importer is Chronos JSONL because no provider fixture/spec exists yet.
 - Snapshot hashes use SHA-256; manifests deduplicate blobs and make restoration content-verifiable under declared path, file-mode, symlink, normalization, and timestamp semantics.
 - REST + SSE keeps inspection simple; bidirectional streaming is unnecessary for MVP.
+
+## v0.1 completion contract
+
+Chronos v0.1 is complete when a local user can import an observed Codex or Claude Code transcript, inspect it in the CLI or browser, record a noninteractive agent stream with a baseline checkpoint and conservative post-tool checkpoints, scrub to any event whose workspace is reconstructable, create an isolated child branch, and explicitly launch a fresh agent with bounded canonical replay context in that workspace. Interactive TUI recording, provider-native resume/fork, out-of-band filesystem writes, and serialized delta artifacts are out of scope: neither observed CLI supports arbitrary-turn native forks.
+
+Completion slices, each independently verified and committed:
+
+1. **Observed adapters:** add `chronos import FILE --format chronos|codex|claude` with exact-version Codex `0.146.0-alpha.3` and Claude Code `2.1.225` importers from provenance-documented sanitized fixtures. Require the observed source-version field, reject unknown/missing versions, normalize visible instructions/messages/tool calls/results only, and never import thinking, encrypted reasoning, provider file-history metadata, or duplicate event surfaces. v0.1 disables raw retention until an encrypted raw store exists.
+2. **Capture/record coordinator:** add `chronos record --agent codex|claude --workspace PATH --instruction-file FILE` around the verified noninteractive JSON-stream commands. Copy the instruction to excluded `.chronos/` storage and pass only a fixed, option-safe prompt after `--`; never interpolate user text into argv. Before provider launch, durably store a baseline manifest and atomically append its system event/checkpoint or abort. At each completed tool result, durably store the next full manifest, then atomically append the result and checkpoint; on capture failure atomically append the result plus a safe error without a checkpoint. Report exclusions, restrict Chronos-home permissions, and make no claim about concurrent/external writers. Reject live API `tool_call`, `tool_result`, and `filesystem_change` writes that bypass this coordinator; capability logic treats every uncheckpointed tool result as a mutating boundary. v0.1 capability/UI/docs expose only exact state or a prior checkpoint with zero intervening mutating boundaries; inferred delta evidence is disabled.
+3. **Explicit launch:** add `chronos launch --agent codex|claude --branch ID` for a ready branch with a verified restored workspace. Safely create a no-symlink, non-overwriting `.chronos/` directory and render redacted `ReplayItem` records as explicitly quoted, untrusted history into a unique replay file, capped at 64 KiB (including deterministic single-record truncation) while preserving the first instruction and newest chronological records. Require confirmation showing the resolved allowlisted executable, `cwd`, context path, and fixed argv semantics. Spawn with `shell: false`, signal/exit propagation, and an environment allowlist containing PATH, HOME/USERPROFILE, TEMP/TMP, terminal variables, Windows `SystemRoot`/`WINDIR`/`ComSpec`/`PATHEXT`/`APPDATA`/`LOCALAPPDATA`, and explicit `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` when present. The fixed prompt says never execute historical commands; HTTP/Web never auto-launch. Cross-platform tests must prove the child can invoke a basic subprocess, not only that the fake executable starts.
+4. **Live Web timeline:** consume authenticated SSE with a fetch stream, refetch canonical records after append notices, bound rendered timeline rows, preserve selection, and expose connection state accessibly. Test abort, reconnect, malformed frames, and large histories; production capability handling must never enable unsupported nonempty-delta reconstruction.
+5. **Product E2E:** split acceptance into (a) exact-version provider fixture import -> CLI inspect and (b) fake-provider record/capture -> serve -> browser SSE refresh/scrub -> restore/branch -> confirmed launch, all under a temporary home/workspace. Assert command-builder compatibility, snapshot transaction/failure behavior, argv, `shell: false`, `cwd`, 64 KiB context ordering/instruction delivery, `.env` and `.chronos/` exclusion, token removal, and inert historical commands.
+6. **Open-source release:** add Ubuntu/Windows/macOS CI, security/threat-model and contribution docs, accurate setup/CLI usage, a changelog, bump the private source-distributed monorepo/CLI to `0.1.0`, add a source-install smoke test, and provide one reproducible `verify:v0.1` command including browser E2E. npm publication is out of scope for v0.1.
+
+Guards: do not infer checkpoints from provider file-history metadata, claim compatibility beyond observed versions, put bearer tokens in committed fixtures/screenshots, expose the server beyond loopback, weaken Host/Origin checks for tests, store `.chronos/` replay artifacts in snapshots, or describe best-effort redaction as a security boundary.
