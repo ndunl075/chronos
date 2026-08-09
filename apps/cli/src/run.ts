@@ -12,6 +12,7 @@ import {
   runImport,
   type CommandContext,
 } from "./commands/import.js";
+import { branchSpec, runBranch } from "./commands/branch.js";
 import { inspectSpec, runInspect } from "./commands/inspect.js";
 import { runServe, serveSpec } from "./commands/serve.js";
 import { resolveHome } from "./home.js";
@@ -33,6 +34,7 @@ const COMMANDS: readonly Command[] = Object.freeze([
   { spec: importSpec, run: runImport },
   { spec: inspectSpec, run: runInspect },
   { spec: serveSpec, run: runServe },
+  { spec: branchSpec, run: runBranch },
 ]);
 
 export interface RunEnvironment {

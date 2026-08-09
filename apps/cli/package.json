@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@chronos/adapters": "0.0.0",
+    "@chronos/branching": "0.0.0",
     "@chronos/core": "0.0.0",
     "@chronos/protocol": "0.0.0",
     "@chronos/server": "0.0.0",

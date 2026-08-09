@@ -1,11 +1,23 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { Buffer } from "node:buffer";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
+import {
+  ContentStore,
+  captureWorkspace,
+  serializeManifest,
+} from "@chronos/snapshots";
 import { ChronosRepository, openStorage } from "@chronos/storage";
 
 import { CLI_VERSION, run } from "../dist/index.js";
@@ -444,4 +456,180 @@ test("serve reports a port it cannot use", async (t) => {
   const badPort = await cli(box, ["serve", "--port", "99999"]);
   assert.equal(badPort.exitCode, 2);
   assert.match(badPort.err, /--port must be an integer/);
+});
+
+/**
+ * A session whose checkpoint really does address a captured workspace, so
+ * branching from it reconstructs real files rather than a fixture stub.
+ */
+function branchable(box) {
+  const workspace = join(box.root, "project");
+  mkdirSync(join(workspace, "src"), { recursive: true });
+  writeFileSync(
+    join(workspace, "src", "upload.ts"),
+    "export const retries = 0;\n",
+  );
+  writeFileSync(join(workspace, "README.md"), "# upload\n");
+
+  mkdirSync(box.home, { recursive: true });
+  const store = new ContentStore({ root: join(box.home, "store") });
+  const { manifest } = captureWorkspace({ workspaceRoot: workspace, store });
+  const manifestRef = store.put(
+    new Uint8Array(Buffer.from(serializeManifest(manifest), "utf8")),
+  );
+
+  return box.file(
+    "branchable.jsonl",
+    [
+      `{"type":"session","schemaVersion":1,"id":"s_live","source":"fixture","createdAt":"2026-08-09T00:00:00Z"}`,
+      `{"type":"branch","schemaVersion":1,"id":"b_root"}`,
+      `{"type":"event","schemaVersion":1,"id":"e1","branchId":"b_root","seq":1,"kind":"instruction","occurredAt":"2026-08-09T00:00:00Z","summary":"add retries","payload":{"text":"add retries"}}`,
+      `{"type":"event","schemaVersion":1,"id":"e2","branchId":"b_root","seq":2,"kind":"filesystem_change","occurredAt":"2026-08-09T00:00:05Z","summary":"wrote src/upload.ts","payload":{"paths":["src/upload.ts"]}}`,
+      `{"type":"checkpoint","schemaVersion":1,"id":"cp2","branchId":"b_root","eventSeq":2,"manifestRef":"${manifestRef}"}`,
+      `{"type":"event","schemaVersion":1,"id":"e3","branchId":"b_root","seq":3,"kind":"assistant_message","occurredAt":"2026-08-09T00:00:09Z","summary":"used a fixed sleep","payload":{"text":"used a fixed sleep"}}`,
+    ].join("\n"),
+  );
+}
+
+test("branch forks a session and reconstructs its workspace", async (t) => {
+  const box = sandbox(t);
+  await cli(box, ["import", branchable(box)]);
+
+  const created = await cli(box, [
+    "branch",
+    "s_live",
+    "--at",
+    "2",
+    "--instruction",
+    "use a real backoff instead of a sleep",
+    "--id",
+    "retry",
+    "--json",
+  ]);
+  assert.equal(created.exitCode, 0);
+
+  const result = JSON.parse(created.out);
+  assert.deepEqual(result.branch, {
+    id: "retry",
+    sessionId: "s_live",
+    parentId: "b_root",
+    forkSeq: 2,
+    state: "ready",
+  });
+  assert.equal(
+    result.launchPlan.workspacePath,
+    join(box.home, "workspaces", "retry"),
+  );
+  assert.equal(result.launchPlan.context.length, 2);
+
+  // The reconstructed workspace holds the real files, isolated from the source.
+  assert.equal(
+    readFileSync(
+      join(result.launchPlan.workspacePath, "src", "upload.ts"),
+      "utf8",
+    ),
+    "export const retries = 0;\n",
+  );
+
+  // The branch is visible to inspect, with the instruction as its own event.
+  const timeline = JSON.parse(
+    (await cli(box, ["inspect", "--branch", "retry", "--json"])).out,
+  );
+  assert.deepEqual(
+    timeline.events.map((item) => [item.seq, item.inherited, item.kind]),
+    [
+      [1, true, "instruction"],
+      [2, true, "filesystem_change"],
+      [3, false, "instruction"],
+    ],
+  );
+});
+
+test("branch says plainly that it has run nothing", async (t) => {
+  const box = sandbox(t);
+  await cli(box, ["import", branchable(box)]);
+
+  const created = await cli(box, [
+    "branch",
+    "s_live",
+    "--at",
+    "2",
+    "--instruction",
+    "try the other fix",
+  ]);
+  assert.equal(created.exitCode, 0);
+  assert.match(created.out, /Created branch \S+ from b_root@2/);
+  assert.match(created.out, /Chronos has run nothing/);
+});
+
+test("branch refuses an event with no reconstructable state", async (t) => {
+  const box = sandbox(t);
+  await cli(box, ["import", branchable(box)]);
+
+  const tooEarly = await cli(box, [
+    "branch",
+    "s_live",
+    "--at",
+    "1",
+    "--instruction",
+    "branch before the checkpoint",
+  ]);
+  assert.equal(tooEarly.exitCode, 1);
+  assert.match(tooEarly.err, /cannot reconstruct a workspace/);
+  assert.match(tooEarly.err, /marked with \*/);
+
+  // Only the root branch exists; the refused attempt created no lineage.
+  const overview = JSON.parse(
+    (await cli(box, ["inspect", "s_live", "--json"])).out,
+  );
+  assert.deepEqual(
+    overview.branches.map((branch) => branch.id),
+    ["b_root"],
+  );
+});
+
+test("branch validates what it was asked to do", async (t) => {
+  const box = sandbox(t);
+  await cli(box, ["import", branchable(box)]);
+
+  const noAt = await cli(box, ["branch", "s_live", "--instruction", "x"]);
+  assert.equal(noAt.exitCode, 2);
+  assert.match(noAt.err, /--at is required/);
+
+  const noInstruction = await cli(box, ["branch", "s_live", "--at", "2"]);
+  assert.equal(noInstruction.exitCode, 2);
+  assert.match(noInstruction.err, /--instruction is required/);
+
+  const badAt = await cli(box, [
+    "branch",
+    "s_live",
+    "--at",
+    "0",
+    "--instruction",
+    "x",
+  ]);
+  assert.equal(badAt.exitCode, 2);
+
+  const unknownSession = await cli(box, [
+    "branch",
+    "nope",
+    "--at",
+    "2",
+    "--instruction",
+    "x",
+  ]);
+  assert.equal(unknownSession.exitCode, 1);
+  assert.match(unknownSession.err, /No such session: nope/);
+
+  const unknownParent = await cli(box, [
+    "branch",
+    "s_live",
+    "--from",
+    "nope",
+    "--at",
+    "2",
+    "--instruction",
+    "x",
+  ]);
+  assert.equal(unknownParent.exitCode, 1);
 });
