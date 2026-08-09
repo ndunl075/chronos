@@ -7,8 +7,10 @@ import {
 import { Buffer } from "node:buffer";
 
 import { PROTOCOL_SCHEMA_VERSION, type ServerInfo } from "@chronos/protocol";
+import type { ChronosRepository } from "@chronos/storage";
 
 import { ApiError, apiError, toApiError } from "./errors.js";
+import { readRoutes } from "./routes.js";
 import { Router, type HttpMethod, type Route } from "./router.js";
 import {
   assertTrustedRequest,
@@ -37,6 +39,8 @@ export interface ServerOptions {
   readonly token?: string;
   /** Largest accepted request body. Defaults to 1 MiB. */
   readonly maxRequestBytes?: number;
+  /** Mounts the session, branch, and event routes when supplied. */
+  readonly repository?: ChronosRepository;
   readonly routes?: readonly Route[];
 }
 
@@ -85,6 +89,7 @@ export async function startServer(
   const state: { port: number } = { port: 0 };
   const router = new Router([
     ...infoRoutes(() => state.port, host),
+    ...(options.repository === undefined ? [] : readRoutes(options.repository)),
     ...(options.routes ?? []),
   ]);
   const server = createServer((request, response) => {

@@ -16,6 +16,7 @@ export {
   isLoopbackHost,
   tokensMatch,
 } from "./security.js";
+export { readRoutes, type SessionOverview } from "./routes.js";
 export {
   ServerConfigError,
   startServer,

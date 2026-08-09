@@ -189,6 +189,20 @@ export interface EventCapabilities {
   readonly branchability: BranchabilityStatus;
 }
 
+/**
+ * A timeline row: everything the UI needs to draw an event and nothing that
+ * could be large. Payloads and raw references load only when a user opens one.
+ */
+export interface EventSummary {
+  readonly id: string;
+  readonly branchId: string;
+  readonly seq: LogicalSequence;
+  readonly kind: EventKind;
+  readonly occurredAt: string;
+  readonly summary: string;
+  readonly hasRawEnvelope: boolean;
+}
+
 /*
  * The API contract. These shapes cross a network boundary, so they are part
  * of the versioned protocol rather than an implementation detail of the
@@ -214,6 +228,23 @@ export interface ApiErrorBody {
     /** Safe to show a user; it never contains a token or a filesystem path. */
     readonly message: string;
   };
+}
+
+/** A single record. */
+export interface ApiResource<Data> {
+  readonly schemaVersion: ProtocolSchemaVersion;
+  readonly data: Data;
+}
+
+/**
+ * A page of records. `nextSeq` is present only when more rows follow, so a
+ * client pages by asking for what it has not seen rather than by offset.
+ */
+export interface ApiPage<Item> {
+  readonly schemaVersion: ProtocolSchemaVersion;
+  readonly items: readonly Item[];
+  readonly total: number;
+  readonly nextSeq?: LogicalSequence;
 }
 
 /** Everything a client needs to know it is talking to a server it supports. */

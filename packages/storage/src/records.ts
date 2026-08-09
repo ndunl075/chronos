@@ -6,9 +6,8 @@ import {
   type Branch,
   type Checkpoint,
   type Event,
-  type EventKind,
+  type EventSummary,
   type JsonValue,
-  type LogicalSequence,
   type Session,
 } from "@chronos/protocol";
 import type { SQLOutputValue } from "node:sqlite";
@@ -17,20 +16,7 @@ import { fail, type StorageErrorCode } from "./errors.js";
 
 export type Row = Record<string, SQLOutputValue>;
 
-/**
- * A transport projection for paging a timeline. It carries everything the UI
- * needs to draw a row and nothing that could be large: payloads and raw
- * envelopes are fetched only when a user opens an event.
- */
-export interface EventSummary {
-  readonly id: string;
-  readonly branchId: string;
-  readonly seq: LogicalSequence;
-  readonly kind: EventKind;
-  readonly occurredAt: string;
-  readonly summary: string;
-  readonly hasRawEnvelope: boolean;
-}
+export type { EventSummary };
 
 /*
  * Storage validates the shape it is asked to persist and the shape it reads
