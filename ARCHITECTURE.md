@@ -35,6 +35,7 @@ CLI -> localhost API/SSE -> timeline UI
 | `packages/storage`   | SQLite migrations and repositories                       |
 | `packages/adapters`  | Provider-specific import/export behind one interface     |
 | `packages/snapshots` | Ignore-aware manifests, blobs, capture, restore          |
+| `packages/branching` | The one branch workflow: plan, restore, settle, instruct |
 | `apps/server`        | Loopback HTTP API and SSE event stream                   |
 | `apps/web`           | Virtualized transcript, scrubber, branch composer        |
 | `apps/cli`           | `import`, `inspect`, `serve`, and `branch` workflows     |

@@ -1,23 +1,11 @@
-import { randomUUID } from "node:crypto";
-import { join } from "node:path";
-import { TextDecoder } from "node:util";
-
-import { DEFAULT_REDACTION_POLICY, redactText } from "@chronos/adapters";
-import { indexSession, prepareBranchPlan } from "@chronos/core";
+import { BranchError, createBranch } from "@chronos/branching";
 import {
-  PROTOCOL_SCHEMA_VERSION,
   isLogicalSequence,
   type Branch,
-  type Event,
   type LaunchPlan,
   type LogicalSequence,
 } from "@chronos/protocol";
-import {
-  SnapshotError,
-  parseManifest,
-  restoreSnapshot,
-  type ContentStore,
-} from "@chronos/snapshots";
+import type { ContentStore } from "@chronos/snapshots";
 import type { ChronosRepository } from "@chronos/storage";
 
 import { apiError } from "./errors.js";
@@ -40,12 +28,9 @@ export interface BranchCreated {
 /**
  * Create a child branch from a recorded coordinate.
  *
- * The order is the whole safety story. Lineage is inserted as `preparing`
- * before anything touches a filesystem, the workspace is reconstructed into a
- * new directory and verified against its manifest, and only then does the
- * branch settle as `ready` with its new instruction appended in one
- * transaction. A failure settles the branch as `failed`, leaving a record of
- * the attempt rather than a branch claiming a workspace it never built.
+ * The workflow itself lives in `@chronos/branching`, which the CLI calls too;
+ * this route validates the request, translates failures into status codes,
+ * and tells subscribers that the new branch owns an event.
  *
  * Creating a branch runs nothing. The response carries a launch plan whose
  * context is display data; launching it is a separate, explicit act.
@@ -62,105 +47,71 @@ export function branchRoutes(
       handler: (context: RequestContext) => {
         const sessionId = requiredParam(context, "sessionId");
         const input = branchRequest(context);
-        const graph = guard(() => repository.loadSessionGraph(sessionId));
-        const index = guard(() => indexSession(graph));
-        const branchId = input.id ?? randomUUID();
-        const plan = guard(() =>
-          prepareBranchPlan(index, {
-            id: branchId,
+        // The session must exist before the workflow reports anything else.
+        if (guard(() => repository.getSession(sessionId)) === undefined) {
+          apiError("not_found", "No such session");
+        }
+
+        let created;
+        try {
+          created = createBranch({
+            repository,
+            store: options.store,
+            workspacesRoot: options.workspacesRoot,
+            sessionId,
             parentBranchId: input.parentBranchId,
             forkSeq: input.forkSeq,
             instruction: input.instruction,
-          }),
-        );
-
-        const reconstruction = plan.reconstruction;
-        if (
-          reconstruction.kind === "checkpoint_plus_deltas" &&
-          reconstruction.deltaEventSeqs.length > 0
-        ) {
-          apiError(
-            "conflict",
-            "Reconstructing from recorded deltas is not implemented yet",
-          );
-        }
-        const checkpoint = graph.checkpoints.find(
-          (item) => item.id === reconstruction.checkpointId,
-        );
-        if (checkpoint === undefined) {
-          apiError("conflict", "The checkpoint for that event is missing");
-        }
-
-        guard(() => repository.insertBranch(plan.branch));
-        let workspacePath: string;
-        try {
-          const manifest = parseManifest(
-            new TextDecoder().decode(options.store.get(checkpoint.manifestRef)),
-          );
-          workspacePath = restoreSnapshot({
-            manifest,
-            store: options.store,
-            targetPath: join(options.workspacesRoot, branchId),
-          }).workspacePath;
+            ...(input.id === undefined ? {} : { branchId: input.id }),
+          });
         } catch (error) {
-          // The branch keeps its failure rather than vanishing; a retry uses a
-          // new branch id and therefore a fresh workspace directory.
-          guard(() => repository.settleBranch(branchId, "failed"));
-          if (error instanceof SnapshotError) {
-            apiError("conflict", "The workspace could not be reconstructed");
-          }
-          throw error;
+          throw toApiFailure(error);
         }
 
-        const event = instructionEvent(
-          branchId,
-          input.forkSeq,
-          plan.instruction,
+        broadcaster.publish(
+          appendedNotice(sessionId, created.branch.id, [
+            created.instructionEvent.id,
+          ]),
         );
-        const branch = guard(() =>
-          repository.transaction(() => {
-            const settled = repository.settleBranch(branchId, "ready");
-            repository.appendEvents([event]);
-            return settled;
-          }),
-        );
-        broadcaster.publish(appendedNotice(sessionId, branchId, [event.id]));
-
-        const created: BranchCreated = {
-          branch,
-          launchPlan: {
-            workspacePath,
-            context: plan.context,
-            instruction: plan.instruction,
-          },
+        const body: BranchCreated = {
+          branch: created.branch,
+          launchPlan: created.launchPlan,
         };
-        return { status: 201, body: resource(created) };
+        return { status: 201, body: resource(body) };
       },
     },
   ]);
 }
 
-function instructionEvent(
-  branchId: string,
-  forkSeq: LogicalSequence,
-  instruction: string,
-): Event {
-  const seq = forkSeq + 1;
-  if (!isLogicalSequence(seq)) {
-    apiError("bad_request", "That fork point has no room for a next event");
+function toApiFailure(error: unknown): unknown {
+  if (!(error instanceof BranchError)) return error;
+  switch (error.code) {
+    case "INVALID_REQUEST":
+      return apiFailure("bad_request", error.message);
+    case "UNKNOWN_SESSION":
+    case "UNKNOWN_TARGET":
+      return apiFailure("not_found", "No such record");
+    case "NOT_BRANCHABLE":
+    case "UNSUPPORTED_RECONSTRUCTION":
+    case "MISSING_CHECKPOINT":
+    case "RESTORE_FAILED":
+      return apiFailure("conflict", error.message);
+    default:
+      return error;
   }
-  return {
-    id: randomUUID(),
-    branchId,
-    seq,
-    kind: "instruction",
-    occurredAt: new Date().toISOString(),
-    summary: instruction.slice(0, 200),
-    payload: {
-      schemaVersion: PROTOCOL_SCHEMA_VERSION,
-      data: { text: instruction },
-    },
-  };
+}
+
+/** Build the failure rather than throwing it, so callers keep the stack. */
+function apiFailure(
+  code: "bad_request" | "not_found" | "conflict",
+  message: string,
+): unknown {
+  try {
+    apiError(code, message);
+  } catch (error) {
+    return error;
+  }
+  return undefined;
 }
 
 function branchRequest(context: RequestContext): {
@@ -176,7 +127,7 @@ function branchRequest(context: RequestContext): {
   const record = body as Record<string, unknown>;
   const parentBranchId = record["parentBranchId"];
   const forkSeq = record["forkSeq"];
-  const rawInstruction = record["instruction"];
+  const instruction = record["instruction"];
   const id = record["id"];
   if (
     typeof parentBranchId !== "string" ||
@@ -187,20 +138,12 @@ function branchRequest(context: RequestContext): {
   if (!isLogicalSequence(forkSeq)) {
     apiError("bad_request", "forkSeq must be a 1-based integer");
   }
-  if (
-    typeof rawInstruction !== "string" ||
-    rawInstruction.trim().length === 0
-  ) {
+  if (typeof instruction !== "string" || instruction.trim().length === 0) {
     apiError("bad_request", "instruction is required");
   }
   if (id !== undefined && (typeof id !== "string" || id.trim().length === 0)) {
     apiError("bad_request", "id must be a non-empty string when supplied");
   }
-  // A person types this, so it is redacted like any other stored record.
-  const instruction = redactText(
-    rawInstruction,
-    DEFAULT_REDACTION_POLICY,
-  ).value;
   return {
     ...(id === undefined ? {} : { id }),
     parentBranchId,
