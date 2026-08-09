@@ -6,7 +6,13 @@ export type StorageErrorCode =
   | "MIGRATION_FAILED"
   | "INVALID_MIGRATION"
   | "NESTED_TRANSACTION"
-  | "CONSTRAINT_VIOLATION";
+  | "CONSTRAINT_VIOLATION"
+  | "INVALID_RECORD"
+  | "CORRUPT_RECORD"
+  | "DUPLICATE_RECORD"
+  | "UNKNOWN_RECORD"
+  | "INVALID_STATE_TRANSITION"
+  | "INVALID_PAGE";
 
 export class StorageError extends Error {
   readonly code: StorageErrorCode;

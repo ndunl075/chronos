@@ -9,10 +9,13 @@
   "exports": "./dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test test/storage.test.mjs",
+    "test": "npm run build && node --test test/storage.test.mjs test/repositories.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json"
   },
   "dependencies": {
     "@chronos/protocol": "0.0.0"
+  },
+  "devDependencies": {
+    "@chronos/core": "0.0.0"
   }
 }

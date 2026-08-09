@@ -56,6 +56,11 @@ export class ChronosStorage {
     return this.#database.isOpen;
   }
 
+  /** True while a transaction opened on this connection is still running. */
+  get isInTransaction(): boolean {
+    return this.#database.isOpen && this.#database.isTransaction;
+  }
+
   /**
    * Run `work` inside one `BEGIN IMMEDIATE` transaction, committing on return
    * and rolling back on throw. Transactions do not nest.

@@ -11,3 +11,9 @@ export {
   type Migration,
 } from "./migrations.js";
 export { StorageError, type StorageErrorCode } from "./errors.js";
+export type { EventSummary } from "./records.js";
+export {
+  ChronosRepository,
+  type EventPageOptions,
+  type SessionGraph,
+} from "./repositories.js";
