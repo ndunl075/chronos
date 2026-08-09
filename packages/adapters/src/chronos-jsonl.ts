@@ -9,6 +9,7 @@ import {
   type Checkpoint,
   type Event,
   type EventKind,
+  type JsonValue,
   type LogicalSequence,
   type Session,
 } from "@chronos/protocol";
@@ -20,6 +21,14 @@ import type {
   SessionAdapter,
 } from "./adapter.js";
 import { fail } from "./errors.js";
+import {
+  DEFAULT_REDACTION_POLICY,
+  redactJson,
+  redactText,
+  redactionPolicy,
+  type RedactionPolicy,
+  type RedactionResult,
+} from "./redaction.js";
 
 export const CHRONOS_JSONL_ADAPTER_ID = "chronos-jsonl";
 
@@ -87,6 +96,7 @@ export function parseChronosJsonl(
     DEFAULT_MAX_RECORDS,
     "maxRecords",
   );
+  const redaction = resolveRedaction(options.redaction);
 
   const diagnostics: ImportDiagnostic[] = [];
   const branches = new Map<string, BranchDraft>();
@@ -248,14 +258,31 @@ export function parseChronosJsonl(
             lineNumber,
           );
         }
+        const redactedSummary = redact(summary, redaction, redactText);
+        const redactedPayload = redact(payload, redaction, redactJson);
+        const fired = [
+          ...new Set([
+            ...redactedSummary.matchedRuleIds,
+            ...redactedPayload.matchedRuleIds,
+          ]),
+        ].sort();
+        if (fired.length > 0) {
+          diagnostics.push(
+            Object.freeze({
+              code: "redacted",
+              message: `Event ${id} matched ${fired.join(", ")}`,
+              line: lineNumber,
+            }),
+          );
+        }
         const base = {
           id,
           branchId,
           seq,
           kind: requiredKind(record, lineNumber),
           occurredAt: requiredTimestamp(record, "occurredAt", lineNumber),
-          summary,
-          payload: canonicalEnvelope(payload),
+          summary: redactedSummary.value,
+          payload: canonicalEnvelope(redactedPayload.value),
         };
         const raw = record["raw"];
         if (raw === undefined) {
@@ -332,6 +359,14 @@ export function parseChronosJsonl(
       }),
     );
   }
+  if (redaction === null) {
+    diagnostics.push(
+      Object.freeze({
+        code: "redaction_disabled",
+        message: "Redaction was disabled; canonical data was stored as written",
+      }),
+    );
+  }
 
   return Object.freeze({
     session,
@@ -369,6 +404,31 @@ function assertForkPoints(branches: ReadonlyMap<string, BranchDraft>): void {
       );
     }
   }
+}
+
+/**
+ * Redaction is on unless a caller explicitly turns it off, so an importer
+ * that forgets to think about secrets still redacts.
+ */
+function resolveRedaction(
+  requested: RedactionPolicy | null | undefined,
+): RedactionPolicy | null {
+  if (requested === null) return null;
+  if (requested === undefined) return DEFAULT_REDACTION_POLICY;
+  return redactionPolicy(requested);
+}
+
+function redact<Value extends JsonValue>(
+  value: Value,
+  policy: RedactionPolicy | null,
+  apply: (value: Value, policy: RedactionPolicy) => RedactionResult<JsonValue>,
+): Readonly<{ value: Value; matchedRuleIds: readonly string[] }> {
+  if (policy === null) return { value, matchedRuleIds: [] };
+  const result = apply(value, policy);
+  return {
+    value: result.value as Value,
+    matchedRuleIds: result.matchedRuleIds,
+  };
 }
 
 function parseRecord(line: string, lineNumber: number): JsonRecord {

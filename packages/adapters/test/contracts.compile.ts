@@ -1,11 +1,16 @@
-import type { Event, Session } from "@chronos/protocol";
+import type { Event, JsonValue, Session } from "@chronos/protocol";
 
 import {
   AdapterError,
   CHRONOS_JSONL_SCHEMA_VERSION,
+  DEFAULT_REDACTION_POLICY,
   chronosJsonlAdapter,
   parseChronosJsonl,
+  redactJson,
+  redactText,
+  redactionPolicy,
   type AdapterErrorCode,
+  type RedactionPolicy,
   type ImportOptions,
   type ImportedSession,
   type SessionAdapter,
@@ -29,6 +34,21 @@ void line;
 void CHRONOS_JSONL_SCHEMA_VERSION;
 
 parseChronosJsonl(source, { retainRaw: true, limits: { maxRecords: 10 } });
+parseChronosJsonl(source, { redaction: null });
+
+const policy: RedactionPolicy = redactionPolicy({
+  rules: [{ id: "ticket", label: "ticket", pattern: /TICKET-\d+/g }],
+});
+const redactedText: string = redactText("TICKET-42", policy).value;
+const redactedJson: JsonValue = redactJson({ note: "TICKET-42" }, policy).value;
+void redactedText;
+void redactedJson;
+void DEFAULT_REDACTION_POLICY;
+
+// @ts-expect-error a rule needs a compiled pattern
+redactionPolicy({ rules: [{ id: "x", label: "x", pattern: "TICKET" }] });
+// @ts-expect-error the default policy is frozen
+DEFAULT_REDACTION_POLICY.rules = [];
 
 // @ts-expect-error import options are checked
 parseChronosJsonl(source, { retainRaw: "yes" });

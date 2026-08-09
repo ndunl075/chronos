@@ -116,6 +116,22 @@ the event at `eventSeq`. One checkpoint per `(branchId, eventSeq)`. Events with
 no checkpoint that deltas can reach are shown as non-branchable rather than
 silently restored from the wrong state.
 
+## Redaction
+
+Import redacts canonical data before returning it, so a secret in a source
+file does not become a secret in the Chronos database. Event summaries and
+payloads are matched against a policy of best-effort secret patterns (private
+keys, cloud and provider tokens, JWTs, bearer headers, URL credentials, and
+`name = value` assignments), and values under a sensitive field name such as
+`password`, `token`, or `authorization` are removed whatever they contain.
+Matches become `[redacted:<label>]` markers, and the import reports which
+rules fired on which line.
+
+Detection is best-effort. A rule that never fires does not mean a transcript
+is clean, and a caller may supply its own policy. Redaction can be turned off
+for a source that is already redacted, but never silently: the import then
+reports a `redaction_disabled` diagnostic.
+
 ## Rejections
 
 Import fails, rather than importing part of a file, when a record is malformed:

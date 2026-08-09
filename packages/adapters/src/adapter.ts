@@ -1,5 +1,7 @@
 import type { Branch, Checkpoint, Event, Session } from "@chronos/protocol";
 
+import type { RedactionPolicy } from "./redaction.js";
+
 /** Bounds applied while reading a source file. */
 export interface ImportLimits {
   /** Longest accepted line, in UTF-16 code units. Defaults to 1048576. */
@@ -16,10 +18,20 @@ export interface ImportOptions {
    */
   readonly retainRaw?: boolean;
   readonly limits?: ImportLimits;
+  /**
+   * Secret patterns applied to canonical data before it is returned. Defaults
+   * to `DEFAULT_REDACTION_POLICY`; pass `null` only when the caller has
+   * already redacted the source and can say so.
+   */
+  readonly redaction?: RedactionPolicy | null;
 }
 
 export type ImportDiagnosticCode =
-  "raw_envelope_dropped" | "empty_summary" | "no_checkpoints";
+  | "raw_envelope_dropped"
+  | "empty_summary"
+  | "no_checkpoints"
+  | "redacted"
+  | "redaction_disabled";
 
 /**
  * Something a user should know about an import that is not a failure. An
