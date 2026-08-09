@@ -5,6 +5,10 @@ import {
   CHRONOS_JSONL_SCHEMA_VERSION,
   DEFAULT_REDACTION_POLICY,
   chronosJsonlAdapter,
+  claudeJsonlAdapter,
+  codexJsonlAdapter,
+  parseClaudeJsonl,
+  parseCodexJsonl,
   parseChronosJsonl,
   redactJson,
   redactText,
@@ -20,6 +24,10 @@ declare const source: string;
 declare const options: ImportOptions;
 
 const adapter: SessionAdapter = chronosJsonlAdapter;
+const providers: readonly SessionAdapter[] = [
+  codexJsonlAdapter,
+  claudeJsonlAdapter,
+];
 const imported: ImportedSession = adapter.parse(source, options);
 const session: Session = imported.session;
 const first: Event | undefined = imported.events[0];
@@ -32,9 +40,13 @@ void raw;
 void code;
 void line;
 void CHRONOS_JSONL_SCHEMA_VERSION;
+void providers;
 
 parseChronosJsonl(source, { retainRaw: true, limits: { maxRecords: 10 } });
 parseChronosJsonl(source, { redaction: null });
+parseCodexJsonl(source, { redaction: null });
+parseClaudeJsonl(source, { limits: { maxRecords: 10 } });
+parseClaudeJsonl(source, { limits: { maxInputLength: 1024 } });
 
 const policy: RedactionPolicy = redactionPolicy({
   rules: [{ id: "ticket", label: "ticket", pattern: /TICKET-\d+/g }],

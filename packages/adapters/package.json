@@ -9,7 +9,7 @@
   "exports": "./dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test test/chronos-jsonl.test.mjs test/redaction.test.mjs",
+    "test": "npm run build && node --test test/chronos-jsonl.test.mjs test/provider-jsonl.test.mjs test/redaction.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json"
   },
   "dependencies": {

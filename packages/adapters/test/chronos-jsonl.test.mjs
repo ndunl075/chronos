@@ -250,6 +250,17 @@ test("import limits bound what one file can do", () => {
   const input = file(line());
 
   assert.throws(
+    () =>
+      parseChronosJsonl(input, {
+        limits: { maxInputLength: input.length - 1 },
+      }),
+    (error) =>
+      error instanceof AdapterError &&
+      error.code === "LIMIT_EXCEEDED" &&
+      error.line === undefined &&
+      error.details.maxInputLength === input.length - 1,
+  );
+  assert.throws(
     () => parseChronosJsonl(input, { limits: { maxLineLength: 10 } }),
     (error) => error.code === "LIMIT_EXCEEDED" && error.line === 1,
   );

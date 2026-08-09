@@ -37,6 +37,7 @@ export const CHRONOS_JSONL_SCHEMA_VERSION = 1;
 
 const DEFAULT_MAX_LINE_LENGTH = 1_048_576;
 const DEFAULT_MAX_RECORDS = 200_000;
+const DEFAULT_MAX_INPUT_LENGTH = 67_108_864;
 
 const SESSION_KEYS = ["type", "schemaVersion", "id", "source", "createdAt"];
 const BRANCH_KEYS = ["type", "schemaVersion", "id", "parentId", "forkSeq"];
@@ -84,6 +85,16 @@ export function parseChronosJsonl(
 ): ImportedSession {
   if (typeof input !== "string") {
     fail("INVALID_INPUT", "Chronos JSONL input must be a string");
+  }
+  const maxInputLength = positiveLimit(
+    options.limits?.maxInputLength,
+    DEFAULT_MAX_INPUT_LENGTH,
+    "maxInputLength",
+  );
+  if (input.length > maxInputLength) {
+    fail("LIMIT_EXCEEDED", "Input exceeds the configured limit", undefined, {
+      maxInputLength,
+    });
   }
   const retainRaw = options.retainRaw ?? false;
   const maxLineLength = positiveLimit(

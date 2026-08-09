@@ -1,12 +1,20 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { chronosJsonlAdapter, AdapterError } from "@chronos/adapters";
+import {
+  chronosJsonlAdapter,
+  codexJsonlAdapter,
+  claudeJsonlAdapter,
+  AdapterError,
+  type SessionAdapter,
+  DEFAULT_PROVIDER_MAX_INPUT_LENGTH,
+} from "@chronos/adapters";
 import { ChronosRepository, StorageError, openStorage } from "@chronos/storage";
 
 import {
   booleanFlag,
   requiredPositional,
+  stringFlag,
   type CommandSpec,
   type ParsedArgs,
 } from "../args.js";
@@ -17,12 +25,17 @@ import type { Reporter } from "../output.js";
 export const importSpec: CommandSpec = {
   name: "import",
   summary:
-    "Import a Chronos JSONL session file into the local database. Canonical data is redacted on the way in.",
+    "Import a Chronos, Codex, or Claude Code JSONL session. Canonical data is redacted on the way in.",
   positionals: [
     { name: "file", required: true, description: "Path to a .jsonl session" },
   ],
   flags: {
     home: { type: "string", description: "Chronos home directory" },
+    format: {
+      type: "string",
+      description:
+        "Source format: chronos, codex, or claude (default: chronos)",
+    },
     json: { type: "boolean", description: "Print the result as JSON" },
     "retain-raw": {
       type: "boolean",
@@ -52,20 +65,27 @@ export interface CommandContext {
  */
 export function runImport(args: ParsedArgs, context: CommandContext): void {
   const file = resolve(context.cwd, requiredPositional(args, 0, "file"));
-  const source = read(file);
   const redact = !booleanFlag(args, "no-redact");
+  const adapter = selectAdapter(stringFlag(args, "format") ?? "chronos");
+
+  if (booleanFlag(args, "retain-raw")) {
+    failure(
+      "Raw retention is unavailable in Chronos v0.1",
+      "An encrypted restricted raw store has not been implemented",
+    );
+  }
+  const source = read(file);
 
   let imported;
   try {
-    imported = chronosJsonlAdapter.parse(source, {
-      retainRaw: booleanFlag(args, "retain-raw"),
+    imported = adapter.parse(source, {
       ...(redact ? {} : { redaction: null }),
     });
   } catch (error) {
     if (error instanceof AdapterError) {
       failure(
         `${file} could not be imported: ${error.message}`,
-        "See docs/formats/chronos-jsonl.md for the accepted record shapes",
+        `See ${adapter.documentation} for the accepted record shapes`,
       );
     }
     throw error;
@@ -101,8 +121,18 @@ export function runImport(args: ParsedArgs, context: CommandContext): void {
   report(imported, context.reporter, home);
 }
 
+function selectAdapter(format: string): SessionAdapter {
+  if (format === "chronos") return chronosJsonlAdapter;
+  if (format === "codex") return codexJsonlAdapter;
+  if (format === "claude") return claudeJsonlAdapter;
+  failure(
+    `Unknown import format: ${format}`,
+    "--format must be chronos, codex, or claude",
+  );
+}
+
 function report(
-  imported: ReturnType<typeof chronosJsonlAdapter.parse>,
+  imported: ReturnType<SessionAdapter["parse"]>,
   reporter: Reporter,
   home: ChronosHome,
 ): void {
@@ -138,8 +168,9 @@ function report(
 }
 
 function read(file: string): string {
+  let size: number;
   try {
-    return readFileSync(file, "utf8");
+    size = statSync(file).size;
   } catch (error) {
     const code =
       error !== null && typeof error === "object" && "code" in error
@@ -149,5 +180,20 @@ function read(file: string): string {
       `Could not read ${file}`,
       code === "ENOENT" ? "The file does not exist" : code,
     );
+  }
+  if (size > DEFAULT_PROVIDER_MAX_INPUT_LENGTH) {
+    failure(
+      `Could not read ${file}`,
+      `The file exceeds the ${String(DEFAULT_PROVIDER_MAX_INPUT_LENGTH)} byte import limit`,
+    );
+  }
+  try {
+    return readFileSync(file, "utf8");
+  } catch (error) {
+    const code =
+      error !== null && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code)
+        : "unknown";
+    failure(`Could not read ${file}`, code);
   }
 }

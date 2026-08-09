@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -35,6 +36,16 @@ const FIXTURE = readFileSync(
     "upload-retry.jsonl",
   ),
   "utf8",
+);
+const ADAPTER_FIXTURES = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+  "..",
+  "packages",
+  "adapters",
+  "test",
+  "fixtures",
 );
 
 function sandbox(t) {
@@ -160,7 +171,7 @@ test("json mode prints one object and no prose", async (t) => {
   );
 });
 
-test("raw retention and redaction are opt-in and opt-out", async (t) => {
+test("raw retention is unavailable while redaction remains opt-out", async (t) => {
   const box = sandbox(t);
   const retained = sandbox(t);
   const path = box.file("session.jsonl", FIXTURE);
@@ -171,11 +182,8 @@ test("raw retention and redaction are opt-in and opt-out", async (t) => {
     "--retain-raw",
     "--json",
   ]);
-  assert.equal(result.exitCode, 0);
-  assert.deepEqual(JSON.parse(result.out).diagnostics, []);
-
-  const repository = retained.read();
-  assert.equal(repository.getEvent("e3").rawEnvelope.ref, "raw/e3.json");
+  assert.equal(result.exitCode, 1);
+  assert.match(result.err, /Raw retention is unavailable/);
 
   const plain = sandbox(t);
   const secret = plain.file(
@@ -197,6 +205,30 @@ test("raw retention and redaction are opt-in and opt-out", async (t) => {
   assert.equal(raw.read().getEvent("e1").summary, "key AKIAIOSFODNN7EXAMPLE");
 });
 
+test("import selects exact-version provider adapters", async (t) => {
+  for (const [format, filename, id] of [
+    ["codex", "codex-0.146.0-alpha.3.jsonl", "codex-fixture"],
+    ["claude", "claude-2.1.225.jsonl", "claude-fixture"],
+  ]) {
+    const box = sandbox(t);
+    const result = await cli(box, [
+      "import",
+      join(ADAPTER_FIXTURES, filename),
+      "--format",
+      format,
+      "--json",
+    ]);
+    assert.equal(result.exitCode, 0, result.err);
+    assert.equal(JSON.parse(result.out).sessionId, id);
+    assert.equal(box.read().getSession(id).source, format);
+  }
+
+  const box = sandbox(t);
+  const rejected = await cli(box, ["import", "unused", "--format", "future"]);
+  assert.equal(rejected.exitCode, 1);
+  assert.match(rejected.err, /Unknown import format/);
+});
+
 test("a bad file fails before anything is written", async (t) => {
   const box = sandbox(t);
 
@@ -204,6 +236,12 @@ test("a bad file fails before anything is written", async (t) => {
   assert.equal(missing.exitCode, 1);
   assert.match(missing.err, /Could not read/);
   assert.match(missing.err, /The file does not exist/);
+
+  const oversized = box.file("oversized.jsonl", "x");
+  truncateSync(oversized, 67_108_865);
+  const tooLarge = await cli(box, ["import", oversized, "--format", "codex"]);
+  assert.equal(tooLarge.exitCode, 1);
+  assert.match(tooLarge.err, /67108864 byte import limit/);
 
   const malformed = box.file("bad.jsonl", "{not json\n");
   const rejected = await cli(box, ["import", malformed]);

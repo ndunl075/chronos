@@ -4,6 +4,8 @@ import type { RedactionPolicy } from "./redaction.js";
 
 /** Bounds applied while reading a source file. */
 export interface ImportLimits {
+  /** Most UTF-16 code units accepted before line splitting. Defaults to 67108864. */
+  readonly maxInputLength?: number;
   /** Longest accepted line, in UTF-16 code units. Defaults to 1048576. */
   readonly maxLineLength?: number;
   /** Most records accepted from one file. Defaults to 200000. */
@@ -31,7 +33,8 @@ export type ImportDiagnosticCode =
   | "empty_summary"
   | "no_checkpoints"
   | "redacted"
-  | "redaction_disabled";
+  | "redaction_disabled"
+  | "unsupported_record";
 
 /**
  * Something a user should know about an import that is not a failure. An
