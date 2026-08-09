@@ -1,5 +1,10 @@
 export type SnapshotErrorCode =
-  "INVALID_PATH" | "INVALID_POLICY" | "INVALID_OPTIONS";
+  | "INVALID_PATH"
+  | "INVALID_POLICY"
+  | "INVALID_OPTIONS"
+  | "INVALID_MANIFEST"
+  | "LIMIT_EXCEEDED"
+  | "DIGEST_MISMATCH";
 
 /** Why a path is not safe to record in, or restore from, a snapshot. */
 export type PathRejection =
