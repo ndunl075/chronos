@@ -16,7 +16,14 @@ export {
   isLoopbackHost,
   tokensMatch,
 } from "./security.js";
-export { readRoutes, type SessionOverview } from "./routes.js";
+export { readRoutes, writeRoutes, type SessionOverview } from "./routes.js";
+export {
+  EventBroadcaster,
+  appendedNotice,
+  type AppendedNotice,
+  type SseWriter,
+  type StreamResult,
+} from "./stream.js";
 export {
   ServerConfigError,
   startServer,

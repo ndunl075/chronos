@@ -10,8 +10,14 @@ import { PROTOCOL_SCHEMA_VERSION, type ServerInfo } from "@chronos/protocol";
 import type { ChronosRepository } from "@chronos/storage";
 
 import { ApiError, apiError, toApiError } from "./errors.js";
-import { readRoutes } from "./routes.js";
+import { readRoutes, writeRoutes } from "./routes.js";
 import { Router, type HttpMethod, type Route } from "./router.js";
+import {
+  EventBroadcaster,
+  createSseWriter,
+  isStreamResult,
+  type StreamResult,
+} from "./stream.js";
 import {
   assertTrustedRequest,
   generateToken,
@@ -41,6 +47,8 @@ export interface ServerOptions {
   readonly maxRequestBytes?: number;
   /** Mounts the session, branch, and event routes when supplied. */
   readonly repository?: ChronosRepository;
+  /** Milliseconds between stream keep-alive comments. Defaults to 15000. */
+  readonly heartbeatMs?: number;
   readonly routes?: readonly Route[];
 }
 
@@ -86,10 +94,20 @@ export async function startServer(
     );
   }
 
+  const heartbeatMs = options.heartbeatMs ?? 15_000;
+  if (!Number.isSafeInteger(heartbeatMs) || heartbeatMs < 1) {
+    throw new ServerConfigError("heartbeatMs must be a positive integer");
+  }
+  const broadcaster = new EventBroadcaster();
   const state: { port: number } = { port: 0 };
   const router = new Router([
     ...infoRoutes(() => state.port, host),
-    ...(options.repository === undefined ? [] : readRoutes(options.repository)),
+    ...(options.repository === undefined
+      ? []
+      : [
+          ...readRoutes(options.repository),
+          ...writeRoutes(options.repository, broadcaster),
+        ]),
     ...(options.routes ?? []),
   ]);
   const server = createServer((request, response) => {
@@ -97,6 +115,7 @@ export async function startServer(
       router,
       token,
       maxRequestBytes,
+      heartbeatMs,
       port: () => state.port,
     });
   });
@@ -136,6 +155,7 @@ interface HandlerState {
   readonly router: Router;
   readonly token: string;
   readonly maxRequestBytes: number;
+  readonly heartbeatMs: number;
   readonly port: () => number;
 }
 
@@ -171,11 +191,45 @@ async function handle(
       query: url.searchParams,
       body,
     });
+    if (isStreamResult(result)) {
+      stream(request, response, result, state.heartbeatMs);
+      return;
+    }
     send(response, result.status ?? 200, result.body, request);
   } catch (error) {
     const apiFailure = toApiError(error);
     send(response, apiFailure.status, apiFailure.body(), request);
   }
+}
+
+/**
+ * Hand the connection to a streaming handler and make sure the subscription
+ * it opened is released the moment the client goes away, however it goes.
+ */
+function stream(
+  request: IncomingMessage,
+  response: ServerResponse,
+  result: StreamResult,
+  heartbeatMs: number,
+): void {
+  const writer = createSseWriter(response);
+  const stop = result.open(writer);
+  const heartbeat = setInterval(
+    () => writer.comment("keep-alive"),
+    heartbeatMs,
+  );
+  heartbeat.unref();
+  let released = false;
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    clearInterval(heartbeat);
+    stop();
+    writer.close();
+  };
+  request.on("close", release);
+  request.on("error", release);
+  response.on("close", release);
 }
 
 async function readJsonBody(

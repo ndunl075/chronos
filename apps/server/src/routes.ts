@@ -14,13 +14,24 @@ import {
   type Checkpoint,
   type Event,
   type EventSummary,
+  type JsonValue,
   type LogicalSequence,
   type Session,
 } from "@chronos/protocol";
 import { StorageError, type ChronosRepository } from "@chronos/storage";
+import {
+  DEFAULT_REDACTION_POLICY,
+  redactJson,
+  redactText,
+} from "@chronos/adapters";
 
 import { ApiError, apiError } from "./errors.js";
 import type { RequestContext, Route } from "./router.js";
+import {
+  appendedNotice,
+  type EventBroadcaster,
+  type StreamResult,
+} from "./stream.js";
 
 const DEFAULT_PAGE_SIZE = 200;
 const MAX_PAGE_SIZE = 1000;
@@ -273,6 +284,11 @@ function guard<T>(work: () => T): T {
       if (error.code === "DUPLICATE_RECORD") {
         apiError("conflict", "That record already exists");
       }
+      if (error.code === "CONSTRAINT_VIOLATION") {
+        // A write that history refuses is the caller disagreeing with what is
+        // already stored, not a server fault.
+        apiError("conflict", "That write conflicts with the stored history");
+      }
       throw error;
     }
     if (error instanceof CoreDomainError) {
@@ -289,4 +305,117 @@ function guard<T>(work: () => T): T {
     }
     throw error;
   }
+}
+
+const MAX_APPEND_BATCH = 500;
+
+/**
+ * The write and live-view surface.
+ *
+ * An append lands in one transaction and only then broadcasts. Subscribers
+ * receive event identifiers and fetch the canonical records themselves, so
+ * the stream can never disagree with what is stored.
+ */
+export function writeRoutes(
+  repository: ChronosRepository,
+  broadcaster: EventBroadcaster,
+): readonly Route[] {
+  return Object.freeze([
+    {
+      method: "POST" as const,
+      path: "/branches/:branchId/events",
+      handler: (context: RequestContext) => {
+        const branchId = requiredParam(context, "branchId");
+        const branch = guard(() => repository.getBranch(branchId));
+        if (branch === undefined) apiError("not_found", "No such branch");
+        const events = appendBody(context, branchId);
+        const appended = guard(() => repository.appendEvents(events));
+        broadcaster.publish(
+          appendedNotice(
+            branch.sessionId,
+            branchId,
+            appended.map((item) => item.id),
+          ),
+        );
+        return {
+          status: 201,
+          body: page(appended.map(toSummary), appended.length),
+        };
+      },
+    },
+    {
+      method: "GET" as const,
+      path: "/sessions/:sessionId/stream",
+      handler: (context: RequestContext): StreamResult => {
+        const sessionId = requiredParam(context, "sessionId");
+        if (guard(() => repository.getSession(sessionId)) === undefined) {
+          apiError("not_found", "No such session");
+        }
+        return {
+          kind: "sse",
+          open: (writer) => {
+            writer.send("open", {
+              schemaVersion: PROTOCOL_SCHEMA_VERSION,
+              sessionId,
+            });
+            return broadcaster.subscribe(sessionId, (notice) => {
+              writer.send("appended", notice);
+            });
+          },
+        };
+      },
+    },
+  ]);
+}
+
+/**
+ * Validate an append request and redact it.
+ *
+ * Redaction happens here rather than in storage because this is the boundary
+ * where data that was never under Chronos control arrives; a live agent posts
+ * whatever its tools produced, including whatever those tools printed.
+ */
+function appendBody(
+  context: RequestContext,
+  branchId: string,
+): readonly Event[] {
+  const body = context.body;
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    apiError("bad_request", "The request body must be an object");
+  }
+  const events = (body as { events?: unknown }).events;
+  if (!Array.isArray(events) || events.length === 0) {
+    apiError("bad_request", "events must be a non-empty array");
+  }
+  if (events.length > MAX_APPEND_BATCH) {
+    apiError("payload_too_large", "Too many events in one append");
+  }
+  return events.map((candidate) => {
+    if (candidate === null || typeof candidate !== "object") {
+      apiError("bad_request", "Each event must be an object");
+    }
+    const record = candidate as Record<string, unknown>;
+    if (record["branchId"] !== branchId) {
+      apiError("bad_request", "An event must name the branch it is posted to");
+    }
+    const payload = record["payload"];
+    if (
+      payload === null ||
+      typeof payload !== "object" ||
+      !("data" in (payload as object))
+    ) {
+      apiError("bad_request", "Each event needs a canonical payload envelope");
+    }
+    const envelope = payload as { schemaVersion?: unknown; data: JsonValue };
+    const summary =
+      typeof record["summary"] === "string" ? record["summary"] : "";
+    return {
+      ...record,
+      summary: redactText(summary, DEFAULT_REDACTION_POLICY).value,
+      payload: {
+        ...envelope,
+        data: redactJson(envelope.data, DEFAULT_REDACTION_POLICY).value,
+      },
+    } as unknown as Event;
+  });
 }

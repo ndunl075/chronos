@@ -1,4 +1,5 @@
 import { apiError } from "./errors.js";
+import type { StreamResult } from "./stream.js";
 
 export type HttpMethod = "GET" | "POST";
 
@@ -12,10 +13,13 @@ export interface RequestContext {
   readonly body: unknown;
 }
 
-export interface HandlerResult {
+export interface JsonResult {
   readonly status?: number;
   readonly body: unknown;
 }
+
+/** A handler answers with a body, or takes over the connection to stream. */
+export type HandlerResult = JsonResult | StreamResult;
 
 export type RouteHandler = (
   context: RequestContext,
