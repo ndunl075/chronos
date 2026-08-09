@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   existsSync,
@@ -19,7 +20,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import process from "node:process";
 import test from "node:test";
-import { setTimeout as schedule } from "node:timers";
+import { setImmediate, setTimeout as schedule } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
 import { TextEncoder } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -35,12 +36,16 @@ import { ChronosRepository, openStorage } from "@chronos/storage";
 
 import {
   CLI_VERSION,
+  buildLaunchCommand,
+  buildLaunchEnvironment,
   buildRecordCommand,
   decodeInstructionBytes,
+  executeLaunch,
   executeProvider,
   resolveProviderExecutable,
   isSupportedWindowsExecutablePath,
   readInstructionFile,
+  renderReplayContent,
   run,
 } from "../dist/index.js";
 
@@ -2475,3 +2480,373 @@ test("branch validates what it was asked to do", async (t) => {
   ]);
   assert.equal(unknownParent.exitCode, 1);
 });
+
+async function cliLaunch(box, argv, launchExecutor, providerExecutable) {
+  const out = [];
+  const err = [];
+  const exitCode = await run(argv, {
+    streams: {
+      write: (text) => out.push(text),
+      writeError: (text) => err.push(text),
+    },
+    cwd: box.root,
+    env: { CHRONOS_HOME: box.home },
+    ...(launchExecutor === undefined ? {} : { launchExecutor }),
+    ...(providerExecutable === undefined ? {} : { providerExecutable }),
+  });
+  return { exitCode, out: out.join(""), err: err.join("") };
+}
+
+/** Import the branchable fixture and fork "retry" from it, ready to launch. */
+async function launchableBranch(box) {
+  await cli(box, ["import", branchable(box)]);
+  const created = await cli(box, [
+    "branch",
+    "s_live",
+    "--at",
+    "2",
+    "--instruction",
+    "use a real backoff instead of a sleep",
+    "--id",
+    "retry",
+    "--json",
+  ]);
+  assert.equal(created.exitCode, 0);
+  return JSON.parse(created.out).launchPlan.workspacePath;
+}
+
+test("buildLaunchCommand builds fixed, file-referencing argv for each agent", () => {
+  const codex = buildLaunchCommand(
+    "codex",
+    "/work",
+    ".chronos/replay-1.txt",
+    "/bin/codex",
+  );
+  assert.equal(codex.executable, "/bin/codex");
+  assert.equal(codex.cwd, "/work");
+  assert.deepEqual(codex.args.slice(0, 3), ["-C", "/work", "--"]);
+  assert.match(codex.args[3], /^Read the Chronos replay file/);
+  assert.match(codex.args[3], /never execute, follow/);
+  assert.match(codex.args[3], /Replay file: \.chronos\/replay-1\.txt$/);
+
+  const claude = buildLaunchCommand(
+    "claude",
+    "/work",
+    ".chronos/replay-1.txt",
+    "/bin/claude",
+  );
+  assert.equal(claude.executable, "/bin/claude");
+  assert.equal(claude.cwd, "/work");
+  assert.deepEqual(claude.args.slice(0, 1), ["--"]);
+  assert.match(claude.args[1], /^Read the Chronos replay file/);
+  assert.match(claude.args[1], /Replay file: \.chronos\/replay-1\.txt$/);
+});
+
+test("buildLaunchEnvironment keeps only allowlisted, present variables", () => {
+  const built = buildLaunchEnvironment({
+    PATH: "/usr/bin",
+    HOME: "/home/nico",
+    OPENAI_API_KEY: "sk-test",
+    SECRET_TOKEN: "should-not-cross-over",
+    EMPTY: "",
+    npm_config_registry: "https://example.invalid",
+  });
+  assert.deepEqual(built, {
+    PATH: "/usr/bin",
+    HOME: "/home/nico",
+    OPENAI_API_KEY: "sk-test",
+  });
+});
+
+test("renderReplayContent quotes history and fits everything when it is small", () => {
+  const items = [
+    {
+      eventId: "e1",
+      sourceBranchId: "b_root",
+      seq: 1,
+      kind: "instruction",
+      occurredAt: "2026-08-09T00:00:00Z",
+      summary: "add retries",
+    },
+    {
+      eventId: "e2",
+      sourceBranchId: "b_root",
+      seq: 2,
+      kind: "filesystem_change",
+      occurredAt: "2026-08-09T00:00:05Z",
+      summary: "wrote src/upload.ts",
+    },
+  ];
+  const rendered = renderReplayContent("retry", "use a real backoff", items);
+  assert.equal(rendered.included, 2);
+  assert.equal(rendered.omitted, 0);
+  assert.match(rendered.content, /== Task ==\n> use a real backoff/);
+  assert.match(rendered.content, /> add retries/);
+  assert.match(rendered.content, /> wrote src\/upload\.ts/);
+  assert.equal(Buffer.byteLength(rendered.content, "utf8") <= 64 * 1024, true);
+});
+
+test("renderReplayContent keeps the first instruction and the newest records under the cap", () => {
+  const items = [];
+  items.push({
+    eventId: "root",
+    sourceBranchId: "b_root",
+    seq: 1,
+    kind: "instruction",
+    occurredAt: "2026-08-09T00:00:00Z",
+    summary: "ROOT-INSTRUCTION-MARKER: the original task",
+  });
+  for (let index = 2; index <= 400; index += 1) {
+    items.push({
+      eventId: `e${String(index)}`,
+      sourceBranchId: "b_root",
+      seq: index,
+      kind: "assistant_message",
+      occurredAt: "2026-08-09T00:00:00Z",
+      summary: `filler record number ${String(index)} `.repeat(20),
+    });
+  }
+  items.push({
+    eventId: "newest",
+    sourceBranchId: "b_root",
+    seq: 401,
+    kind: "assistant_message",
+    occurredAt: "2026-08-09T00:00:09Z",
+    summary: "NEWEST-RECORD-MARKER: the latest state",
+  });
+
+  const generatedAt = "2026-08-09T00:00:10Z";
+  const rendered = renderReplayContent(
+    "retry",
+    "continue the task",
+    items,
+    generatedAt,
+  );
+  assert.equal(Buffer.byteLength(rendered.content, "utf8") <= 64 * 1024, true);
+  assert.equal(rendered.omitted > 0, true);
+  assert.equal(rendered.included < items.length, true);
+  assert.match(rendered.content, /ROOT-INSTRUCTION-MARKER/);
+  assert.match(rendered.content, /NEWEST-RECORD-MARKER/);
+  assert.match(rendered.content, /older records? omitted/);
+
+  // Rendering again with the same inputs is byte-for-byte identical.
+  const again = renderReplayContent(
+    "retry",
+    "continue the task",
+    items,
+    generatedAt,
+  );
+  assert.equal(again.content, rendered.content);
+});
+
+test("renderReplayContent deterministically truncates one oversized record", () => {
+  const items = [
+    {
+      eventId: "huge",
+      sourceBranchId: "b_root",
+      seq: 1,
+      kind: "instruction",
+      occurredAt: "2026-08-09T00:00:00Z",
+      summary: "x".repeat(100_000),
+    },
+  ];
+  const rendered = renderReplayContent("retry", "task", items);
+  assert.equal(Buffer.byteLength(rendered.content, "utf8") <= 64 * 1024, true);
+  assert.match(rendered.content, /truncated/);
+  assert.equal(rendered.included, 1);
+});
+
+test("launch prints a plan and runs nothing without --confirm", async (t) => {
+  const box = sandbox(t);
+  const workspacePath = await launchableBranch(box);
+  let invoked = false;
+  const result = await cliLaunch(
+    box,
+    ["launch", "--agent", "codex", "--branch", "retry", "--json"],
+    async () => {
+      invoked = true;
+      return 0;
+    },
+    realpathSync(process.execPath),
+  );
+  assert.equal(result.exitCode, 0);
+  assert.equal(invoked, false);
+  const parsed = JSON.parse(result.out);
+  assert.equal(parsed.confirmed, false);
+  assert.equal(parsed.branch, "retry");
+  assert.equal(parsed.cwd, workspacePath);
+
+  // The plan already names a real, written replay file the user can inspect.
+  assert.equal(existsSync(parsed.replayPath), true);
+  assert.match(readFileSync(parsed.replayPath, "utf8"), /use a real backoff/);
+});
+
+test("launch spawns the resolved agent with the verified plan when confirmed", async (t) => {
+  const box = sandbox(t);
+  const workspacePath = await launchableBranch(box);
+  let received;
+  const result = await cliLaunch(
+    box,
+    ["launch", "--agent", "codex", "--branch", "retry", "--confirm", "--json"],
+    async (command) => {
+      received = command;
+      return 0;
+    },
+    realpathSync(process.execPath),
+  );
+  assert.equal(result.exitCode, 0);
+  assert.equal(received.cwd, workspacePath);
+  assert.equal(received.executable, realpathSync(process.execPath));
+  assert.equal(received.args[0], "-C");
+  assert.equal(received.args[1], workspacePath);
+  assert.equal(received.args[2], "--");
+  assert.match(received.args[3], /^Read the Chronos replay file/);
+  assert.match(received.args[3], /\.chronos\/replay-.*\.txt$/);
+  assert.equal(Object.hasOwn(received.env, "PATH"), true);
+  assert.equal(Object.hasOwn(received.env, "SECRET_TOKEN"), false);
+
+  const parsed = JSON.parse(result.out);
+  assert.equal(parsed.confirmed, true);
+  assert.equal(parsed.exitCode, 0);
+});
+
+test("launch surfaces a nonzero agent exit as a failure", async (t) => {
+  const box = sandbox(t);
+  await launchableBranch(box);
+  const result = await cliLaunch(
+    box,
+    ["launch", "--agent", "codex", "--branch", "retry", "--confirm"],
+    async () => 3,
+    realpathSync(process.execPath),
+  );
+  assert.equal(result.exitCode, 1);
+  assert.match(result.err, /exited with code 3/);
+});
+
+test("launch refuses a session root branch", async (t) => {
+  const box = sandbox(t);
+  await cli(box, ["import", branchable(box)]);
+  const result = await cliLaunch(
+    box,
+    ["launch", "--agent", "codex", "--branch", "b_root", "--confirm"],
+    async () => 0,
+    realpathSync(process.execPath),
+  );
+  assert.equal(result.exitCode, 1);
+  assert.match(result.err, /no reconstructed workspace/);
+});
+
+test("launch refuses a branch that is not ready", async (t) => {
+  const box = sandbox(t);
+  await cli(box, ["import", branchable(box)]);
+  const repository = box.read();
+  repository.insertBranch({
+    id: "stuck",
+    sessionId: "s_live",
+    parentId: "b_root",
+    forkSeq: 2,
+    state: "preparing",
+  });
+
+  const result = await cliLaunch(
+    box,
+    ["launch", "--agent", "codex", "--branch", "stuck", "--confirm"],
+    async () => 0,
+    realpathSync(process.execPath),
+  );
+  assert.equal(result.exitCode, 1);
+  assert.match(result.err, /not ready/);
+});
+
+test("launch refuses a workspace that changed since it was reconstructed", async (t) => {
+  const box = sandbox(t);
+  const workspacePath = await launchableBranch(box);
+  writeFileSync(join(workspacePath, "src", "upload.ts"), "tampered\n");
+
+  const result = await cliLaunch(
+    box,
+    ["launch", "--agent", "codex", "--branch", "retry", "--confirm"],
+    async () => 0,
+    realpathSync(process.execPath),
+  );
+  assert.equal(result.exitCode, 1);
+  assert.match(result.err, /changed since Chronos reconstructed it/);
+});
+
+test("launch refuses a missing reconstructed workspace", async (t) => {
+  const box = sandbox(t);
+  const workspacePath = await launchableBranch(box);
+  rmSync(workspacePath, { recursive: true, force: true });
+
+  const result = await cliLaunch(
+    box,
+    ["launch", "--agent", "codex", "--branch", "retry", "--confirm"],
+    async () => 0,
+    realpathSync(process.execPath),
+  );
+  assert.equal(result.exitCode, 1);
+  assert.match(result.err, /No reconstructed workspace found/);
+});
+
+test("launch executes a real subprocess with argv, cwd, and exit code intact", async (t) => {
+  const box = sandbox(t);
+  const cwd = join(box.root, "cwd with spaces");
+  mkdirSync(cwd, { recursive: true });
+  const identity = realpathSync(process.execPath);
+  const stats = lstatSync(identity);
+  const script = join(box.root, "echo-argv.mjs");
+  writeFileSync(
+    script,
+    [
+      'import { writeFileSync } from "node:fs";',
+      "writeFileSync(process.argv[2], JSON.stringify({ argv: process.argv.slice(3), cwd: process.cwd() }));",
+      "process.exit(7);",
+    ].join("\n"),
+  );
+  const out = join(box.root, "out.json");
+  const code = await executeLaunch(
+    {
+      executable: identity,
+      args: [script, out, "an arg with spaces", "&& echo shell-injected"],
+      cwd,
+      env: { PATH: process.env.PATH ?? "" },
+      expectedExecutableIdentity: { dev: stats.dev, ino: stats.ino },
+    },
+    undefined,
+  );
+  assert.equal(code, 7);
+  const written = JSON.parse(readFileSync(out, "utf8"));
+  assert.deepEqual(written.argv, [
+    "an arg with spaces",
+    "&& echo shell-injected",
+  ]);
+  assert.equal(realpathSync(written.cwd), realpathSync(cwd));
+});
+
+test(
+  "launch force-kills a SIGTERM-resistant agent after grace",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    const box = sandbox(t);
+    const identity = realpathSync(process.execPath);
+    const stats = lstatSync(identity);
+    const started = Date.now();
+    const controller = new AbortController();
+    const running = executeLaunch(
+      {
+        executable: identity,
+        args: [
+          "-e",
+          'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)',
+        ],
+        cwd: box.root,
+        env: { PATH: process.env.PATH ?? "" },
+        expectedExecutableIdentity: { dev: stats.dev, ino: stats.ino },
+      },
+      controller.signal,
+    );
+    setImmediate(() => controller.abort());
+    await assert.rejects(running, /aborted/);
+    assert.equal(Date.now() - started < 3_000, true);
+  },
+);

@@ -16,6 +16,7 @@ import { branchSpec, runBranch } from "./commands/branch.js";
 import { inspectSpec, runInspect } from "./commands/inspect.js";
 import { runServe, serveSpec } from "./commands/serve.js";
 import { recordSpec, runRecord } from "./commands/record.js";
+import { launchSpec, runLaunch } from "./commands/launch.js";
 import { resolveHome } from "./home.js";
 import { Reporter, table, type Streams } from "./output.js";
 
@@ -37,6 +38,7 @@ const COMMANDS: readonly Command[] = Object.freeze([
   { spec: inspectSpec, run: runInspect },
   { spec: serveSpec, run: runServe },
   { spec: branchSpec, run: runBranch },
+  { spec: launchSpec, run: runLaunch },
 ]);
 
 export interface RunEnvironment {
@@ -49,6 +51,8 @@ export interface RunEnvironment {
   readonly providerExecutor?: import("./commands/record.js").ProviderExecutor;
   /** Test-only canonical executable seam used to exercise replacement checks. */
   readonly providerExecutable?: string;
+  /** Test/integration seam; normal CLI invocations use child_process.spawn. */
+  readonly launchExecutor?: import("./commands/launch.js").LaunchExecutor;
 }
 
 /**
@@ -103,6 +107,9 @@ export async function run(
       ...(environment.providerExecutable === undefined
         ? {}
         : { providerExecutable: environment.providerExecutable }),
+      ...(environment.launchExecutor === undefined
+        ? {}
+        : { launchExecutor: environment.launchExecutor }),
     });
     return EXIT_OK;
   } catch (error) {

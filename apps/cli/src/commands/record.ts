@@ -1,28 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
-  chmodSync,
-  accessSync,
   closeSync,
   constants,
-  existsSync,
   fstatSync,
   lstatSync,
-  mkdirSync,
   openSync,
   readSync,
   realpathSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import {
-  delimiter,
-  extname,
-  isAbsolute,
-  join,
-  relative,
-  resolve,
-} from "node:path";
+import { join, relative, resolve } from "node:path";
 
 import {
   AdapterError,
@@ -52,6 +41,15 @@ import { ChronosRepository, openStorage } from "@chronos/storage";
 import { stringFlag, type CommandSpec, type ParsedArgs } from "../args.js";
 import { failure, usageError } from "../errors.js";
 import { ensureHome } from "../home.js";
+import {
+  assertExecutableIdentity,
+  inspectExecutable,
+  requireProviderAgent,
+  resolveProviderExecutable,
+  validateProviderExecutable,
+  type ExecutableIdentity,
+} from "../provider-executable.js";
+import { ensureChronosDir } from "../workspace-dir.js";
 import type { CommandContext } from "./import.js";
 
 const MAX_INSTRUCTION_BYTES = 1_048_576;
@@ -128,7 +126,7 @@ export async function runRecord(
   args: ParsedArgs,
   context: CommandContext,
 ): Promise<void> {
-  const agent = provider(stringFlag(args, "agent"));
+  const agent = requireProviderAgent(stringFlag(args, "agent"));
   const workspace = workspaceDirectory(
     context.cwd,
     stringFlag(args, "workspace"),
@@ -448,11 +446,6 @@ function safeExclusions(capture: CaptureResult): JsonValue {
   }));
 }
 
-function provider(value: string | undefined): ProviderAgent {
-  if (value === "codex" || value === "claude") return value;
-  usageError("--agent must be codex or claude");
-}
-
 function workspaceDirectory(cwd: string, value: string | undefined): string {
   if (value === undefined) usageError("--workspace is required");
   const path = resolve(cwd, value);
@@ -565,21 +558,7 @@ export function decodeInstructionBytes(bytes: Uint8Array): string {
 }
 
 function prepareInstruction(workspace: string, instruction: string): string {
-  const directory = join(workspace, ".chronos");
-  try {
-    mkdirSync(directory, { recursive: false, mode: 0o700 });
-  } catch (error) {
-    const code =
-      error !== null && typeof error === "object" && "code" in error
-        ? String((error as { code?: unknown }).code)
-        : "";
-    if (code !== "EEXIST")
-      failure("Could not create the workspace .chronos directory");
-  }
-  const stats = lstatSync(directory);
-  if (!stats.isDirectory() || stats.isSymbolicLink())
-    failure("Workspace .chronos must be a real directory");
-  chmodSync(directory, 0o700);
+  const directory = ensureChronosDir(workspace);
   const path = join(directory, `instruction-${randomUUID()}.txt`);
   writeFileSync(path, instruction, {
     encoding: "utf8",
@@ -640,98 +619,6 @@ async function assertProviderVersion(
       `Chronos v0.1 requires ${expected}`,
     );
   }
-}
-
-/** Resolve a fixed provider name to one canonical regular executable. */
-export function resolveProviderExecutable(
-  agent: ProviderAgent,
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  const pathValue = env["PATH"];
-  if (typeof pathValue !== "string" || pathValue.length === 0)
-    failure(`Could not resolve the ${agent} executable: PATH is empty`);
-  const extensions =
-    process.platform === "win32"
-      ? (env["PATHEXT"] ?? ".COM;.EXE")
-          .split(";")
-          .filter((value) => /^(\.exe|\.com)$/iu.test(value))
-          .filter((value) => value.length > 0)
-      : [""];
-  const names =
-    process.platform === "win32" && extname(agent).length === 0
-      ? extensions.map((extension) => `${agent}${extension}`)
-      : [agent];
-  for (const directory of pathValue.split(delimiter)) {
-    if (directory.length === 0 || !isAbsolute(directory)) continue;
-    for (const name of names) {
-      const candidate = resolve(directory, name);
-      if (!existsSync(candidate)) continue;
-      let before;
-      try {
-        before = lstatSync(candidate);
-        if (!before.isFile() || before.isSymbolicLink()) continue;
-        if (process.platform !== "win32") accessSync(candidate, constants.X_OK);
-        const canonical = realpathSync.native(candidate);
-        const after = lstatSync(canonical);
-        if (!isAbsolute(canonical) || !after.isFile() || after.isSymbolicLink())
-          continue;
-        if (before.dev !== after.dev || before.ino !== after.ino) continue;
-        return canonical;
-      } catch {
-        continue;
-      }
-    }
-  }
-  failure(`Could not resolve a safe ${agent} executable from PATH`);
-}
-
-function validateProviderExecutable(path: string): string {
-  if (!isAbsolute(path))
-    failure("Provider executable must be an absolute path");
-  try {
-    if (process.platform === "win32" && !isSupportedWindowsExecutablePath(path))
-      failure("Provider executable must be a native Windows .exe or .com file");
-    const before = lstatSync(path);
-    if (!before.isFile() || before.isSymbolicLink())
-      failure("Provider executable must be a real regular file");
-    const canonical = realpathSync.native(path);
-    const after = lstatSync(canonical);
-    if (
-      canonical !== path ||
-      !after.isFile() ||
-      after.isSymbolicLink() ||
-      before.dev !== after.dev ||
-      before.ino !== after.ino
-    ) {
-      failure("Provider executable must be one canonical regular file");
-    }
-    return canonical;
-  } catch (error) {
-    if (error instanceof Error && error.name === "CliError") throw error;
-    failure("Provider executable could not be safely inspected");
-  }
-}
-
-export function isSupportedWindowsExecutablePath(path: string): boolean {
-  return /\.(?:exe|com)$/iu.test(extname(path));
-}
-
-interface ExecutableIdentity {
-  readonly path: string;
-  readonly dev: number;
-  readonly ino: number;
-}
-
-function inspectExecutable(path: string): ExecutableIdentity {
-  const canonical = validateProviderExecutable(path);
-  const stats = lstatSync(canonical);
-  return Object.freeze({ path: canonical, dev: stats.dev, ino: stats.ino });
-}
-
-function assertExecutableIdentity(expected: ExecutableIdentity): void {
-  const current = inspectExecutable(expected.path);
-  if (current.dev !== expected.dev || current.ino !== expected.ino)
-    failure("Provider executable changed during recording");
 }
 
 function sameFileIdentity(

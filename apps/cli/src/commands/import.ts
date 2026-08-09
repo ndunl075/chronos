@@ -58,6 +58,8 @@ export interface CommandContext {
   readonly providerExecutor?: import("./record.js").ProviderExecutor;
   /** Test seam: must already be an absolute canonical regular file. */
   readonly providerExecutable?: string;
+  /** Test/integration seam for the interactive launch spawn. */
+  readonly launchExecutor?: import("./launch.js").LaunchExecutor;
 }
 
 /**
