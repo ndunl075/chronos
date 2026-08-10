@@ -17,6 +17,9 @@ export default [
     languageOptions: {
       globals: {
         AbortController: "readonly",
+        DOMException: "readonly",
+        ReadableStream: "readonly",
+        TextEncoder: "readonly",
         fetch: "readonly",
       },
     },
