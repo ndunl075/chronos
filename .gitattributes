@@ -1,0 +1,5 @@
+# Normalize line endings to LF everywhere, regardless of a checkout's local
+# core.autocrlf setting. Without this, a Windows checkout (including GitHub
+# Actions' windows-latest runners) converts LF to CRLF on checkout, and
+# `prettier --check` — which expects LF — then fails on every file.
+* text=auto eol=lf
