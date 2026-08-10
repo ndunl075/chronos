@@ -17,7 +17,12 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 
 import { buildLaunchCommand, run } from "@chronos/cli";
-import { ContentStore, parseManifest } from "@chronos/snapshots";
+import {
+  ContentStore,
+  applyManifestDiff,
+  parseManifest,
+  parseManifestDiff,
+} from "@chronos/snapshots";
 import { ChronosRepository, openStorage } from "@chronos/storage";
 import { ChronosApiClient } from "@chronos/web";
 import { startServer } from "@chronos/server";
@@ -148,7 +153,8 @@ test("record -> serve -> browser SSE refresh/scrub -> restore/branch -> confirme
   );
   assert.equal(recorded.agent, "codex");
   assert.equal(recorded.events, 6);
-  assert.equal(recorded.checkpoints, 2);
+  assert.equal(recorded.checkpoints, 1);
+  assert.equal(recorded.deltas, 1);
   // .env is excluded as a secret, .chronos as reserved runtime material.
   assert.deepEqual(recorded.baselineExcluded.map((item) => item.path).sort(), [
     ".chronos",
@@ -172,14 +178,25 @@ test("record -> serve -> browser SSE refresh/scrub -> restore/branch -> confirme
   const checkpoints = repository.listCheckpoints(recorded.branchId);
   assert.deepEqual(
     checkpoints.map((item) => item.eventSeq),
-    [1, 5],
+    [1],
+  );
+  const deltas = repository.listDeltas(recorded.branchId);
+  assert.deepEqual(
+    deltas.map((item) => item.eventSeq),
+    [5],
   );
 
-  // The checkpoint manifest itself excludes the secret and Chronos's own
-  // runtime directory; this is the durable artifact restore later reads.
+  // The durable artifact restore later reads is the baseline checkpoint plus
+  // the ordered post-tool delta; both exclude the secret and Chronos's own
+  // runtime directory.
   const store = new ContentStore({ root: join(box.home, "store") });
-  const captureManifest = parseManifest(
-    new TextDecoder().decode(store.get(checkpoints.at(-1).manifestRef)),
+  const captureManifest = applyManifestDiff(
+    parseManifest(
+      new TextDecoder().decode(store.get(checkpoints[0].manifestRef)),
+    ),
+    parseManifestDiff(
+      new TextDecoder().decode(store.get(deltas[0].diffRef)),
+    ),
   );
   assert.deepEqual(
     captureManifest.files.map((item) => item.path),
@@ -267,7 +284,10 @@ test("record -> serve -> browser SSE refresh/scrub -> restore/branch -> confirme
 
     const capabilities = await client.getCapabilities(recorded.branchId, 5);
     assert.equal(capabilities.branchability.status, "branchable");
-    assert.equal(capabilities.branchability.reconstruction.kind, "exact");
+    assert.equal(
+      capabilities.branchability.reconstruction.kind,
+      "checkpoint_plus_deltas",
+    );
   });
 
   // --- (b.4) SSE refresh ---------------------------------------------
@@ -464,9 +484,9 @@ test("a checkpoint transaction failure leaves a dirty, non-branchable, failed re
     const sabotage = openStorage({ path: join(box.home, "chronos.sqlite") });
     try {
       sabotage._database().exec(`
-        CREATE TRIGGER e2e_reject_post_tool_checkpoint
-        BEFORE INSERT ON checkpoint WHEN NEW.event_seq > 1
-        BEGIN SELECT RAISE(ABORT, 'forced checkpoint failure'); END
+        CREATE TRIGGER e2e_reject_post_tool_delta
+        BEFORE INSERT ON delta
+        BEGIN SELECT RAISE(ABORT, 'forced delta failure'); END
       `);
     } finally {
       sabotage.close();
@@ -506,7 +526,7 @@ test("a checkpoint transaction failure leaves a dirty, non-branchable, failed re
   const session = repository.listSessions()[0];
   const branch = repository.listBranches(session.id)[0];
   const events = repository.listEvents(branch.id, { limit: 100 });
-  // The failed transaction leaves neither the tool result nor a checkpoint
+  // The failed transaction leaves neither the tool result nor a delta
   // behind - only the tool call and a safe, dirty terminal error.
   assert.deepEqual(
     events.map((item) => item.kind),
@@ -520,6 +540,7 @@ test("a checkpoint transaction failure leaves a dirty, non-branchable, failed re
     repository.listCheckpoints(branch.id).map((item) => item.eventSeq),
     [1],
   );
+  assert.deepEqual(repository.listDeltas(branch.id), []);
   assert.equal(branch.state, "failed");
   storage.close();
 });

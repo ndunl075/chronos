@@ -5,6 +5,7 @@ import {
   isLogicalSequence,
   type Branch,
   type Checkpoint,
+  type Delta,
   type Event,
   type EventSummary,
   type JsonValue,
@@ -222,6 +223,22 @@ export function toCheckpoint(row: Row): Checkpoint {
     branchId: readText(row, "branch_id"),
     eventSeq,
     manifestRef: readText(row, "manifest_ref"),
+  });
+}
+
+export function toDelta(row: Row): Delta {
+  const id = readText(row, "id");
+  const eventSeq = row["event_seq"];
+  if (!isLogicalSequence(eventSeq)) {
+    fail("CORRUPT_RECORD", "Stored delta sequence is invalid", {
+      deltaId: id,
+    });
+  }
+  return Object.freeze({
+    id,
+    branchId: readText(row, "branch_id"),
+    eventSeq,
+    diffRef: readText(row, "diff_ref"),
   });
 }
 

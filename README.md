@@ -118,7 +118,7 @@ domain and infrastructure modules live in `packages/`.
 
 ## Project status
 
-See [CHANGELOG.md](CHANGELOG.md) for what shipped in `0.1.0` and
+See [CHANGELOG.md](CHANGELOG.md) for what shipped in `0.2.0` and
 [ROADMAP.md](ROADMAP.md) for what's next.
 
 ## License

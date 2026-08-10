@@ -114,6 +114,9 @@ export function runImport(args: ParsedArgs, context: CommandContext): void {
       for (const checkpoint of imported.checkpoints) {
         repository.insertCheckpoint(checkpoint);
       }
+      for (const delta of imported.deltas) {
+        repository.insertDelta(delta);
+      }
     });
   } catch (error) {
     if (error instanceof StorageError) {
@@ -154,6 +157,7 @@ function report(
   reporter.line(`  branches     ${String(imported.branches.length)}`);
   reporter.line(`  events       ${String(imported.events.length)}`);
   reporter.line(`  checkpoints  ${String(imported.checkpoints.length)}`);
+  reporter.line(`  deltas       ${String(imported.deltas.length)}`);
   reporter.line(`  database     ${home.databasePath}`);
   if (imported.checkpoints.length === 0) {
     reporter.line();
@@ -168,6 +172,7 @@ function report(
     branches: imported.branches.length,
     events: imported.events.length,
     checkpoints: imported.checkpoints.length,
+    deltas: imported.deltas.length,
     databasePath: home.databasePath,
     diagnostics: imported.diagnostics,
   });

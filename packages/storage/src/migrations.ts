@@ -186,6 +186,47 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     name: "preparing_provider_recordings",
     statements: Object.freeze(ALLOW_PREPARING_RECORDING_EVENTS_V2),
   }),
+  Object.freeze({
+    version: 3,
+    name: "persisted_deltas",
+    statements: Object.freeze([
+      `CREATE TABLE delta (
+         id TEXT PRIMARY KEY,
+         branch_id TEXT NOT NULL,
+         event_seq INTEGER NOT NULL,
+         diff_ref TEXT NOT NULL,
+         CHECK (length(id) > 0),
+         CHECK (event_seq >= 1),
+         CHECK (length(diff_ref) > 0),
+         UNIQUE (branch_id, event_seq),
+         FOREIGN KEY (branch_id, event_seq) REFERENCES event (branch_id, seq)
+           ON DELETE RESTRICT ON UPDATE RESTRICT
+       ) STRICT`,
+
+      // A sequence holds a full checkpoint or an incremental delta, never both.
+      `CREATE TRIGGER delta_not_checkpoint BEFORE INSERT ON delta
+       WHEN EXISTS (
+         SELECT 1 FROM checkpoint
+         WHERE checkpoint.branch_id = NEW.branch_id
+           AND checkpoint.event_seq = NEW.event_seq
+       )
+       BEGIN SELECT RAISE(ABORT, 'chronos: a sequence cannot hold both a checkpoint and a delta'); END`,
+
+      `CREATE TRIGGER checkpoint_not_delta BEFORE INSERT ON checkpoint
+       WHEN EXISTS (
+         SELECT 1 FROM delta
+         WHERE delta.branch_id = NEW.branch_id
+           AND delta.event_seq = NEW.event_seq
+       )
+       BEGIN SELECT RAISE(ABORT, 'chronos: a sequence cannot hold both a checkpoint and a delta'); END`,
+
+      `CREATE TRIGGER delta_immutable_update BEFORE UPDATE ON delta
+       BEGIN SELECT RAISE(ABORT, 'chronos: deltas are immutable'); END`,
+
+      `CREATE TRIGGER delta_immutable_delete BEFORE DELETE ON delta
+       BEGIN SELECT RAISE(ABORT, 'chronos: deltas are immutable'); END`,
+    ]),
+  }),
 ]);
 
 /** The schema version this build writes and expects to read. */

@@ -7,6 +7,7 @@ import {
   isRfc3339Timestamp,
   type Branch,
   type Checkpoint,
+  type Delta,
   type Event,
   type EventKind,
   type JsonValue,
@@ -60,6 +61,14 @@ const CHECKPOINT_KEYS = [
   "branchId",
   "eventSeq",
   "manifestRef",
+];
+const DELTA_KEYS = [
+  "type",
+  "schemaVersion",
+  "id",
+  "branchId",
+  "eventSeq",
+  "diffRef",
 ];
 const RAW_KEYS = ["ref", "mediaType", "sourceSchemaVersion"];
 
@@ -116,6 +125,10 @@ export function parseChronosJsonl(
   const ownedSequences = new Set<string>();
   const checkpoints: Checkpoint[] = [];
   const checkpointIds = new Set<string>();
+  const checkpointKeys = new Set<string>();
+  const deltas: Delta[] = [];
+  const deltaIds = new Set<string>();
+  const deltaKeys = new Set<string>();
   let session: Session | undefined;
   let rootBranchId: string | undefined;
   let records = 0;
@@ -338,13 +351,57 @@ export function parseChronosJsonl(
             lineNumber,
           );
         }
+        const key = `${branchId}:${String(eventSeq)}`;
+        if (checkpointKeys.has(key) || deltaKeys.has(key)) {
+          fail(
+            "DUPLICATE_ID",
+            "A sequence already holds a checkpoint or delta",
+            lineNumber,
+          );
+        }
         checkpointIds.add(id);
+        checkpointKeys.add(key);
         checkpoints.push(
           Object.freeze({
             id,
             branchId,
             eventSeq,
             manifestRef: requiredString(record, "manifestRef", lineNumber),
+          }),
+        );
+        break;
+      }
+      case "delta": {
+        assertKeys(record, DELTA_KEYS, lineNumber, "Delta");
+        const id = requiredString(record, "id", lineNumber);
+        if (deltaIds.has(id)) {
+          fail("DUPLICATE_ID", `Duplicate delta id: ${id}`, lineNumber);
+        }
+        const branchId = requiredString(record, "branchId", lineNumber);
+        const eventSeq = requiredSequence(record, "eventSeq", lineNumber);
+        if (!ownedSequences.has(`${branchId}:${String(eventSeq)}`)) {
+          fail(
+            "UNKNOWN_EVENT",
+            "A delta is declared after the event it captures",
+            lineNumber,
+          );
+        }
+        const key = `${branchId}:${String(eventSeq)}`;
+        if (checkpointKeys.has(key) || deltaKeys.has(key)) {
+          fail(
+            "DUPLICATE_ID",
+            "A sequence already holds a checkpoint or delta",
+            lineNumber,
+          );
+        }
+        deltaIds.add(id);
+        deltaKeys.add(key);
+        deltas.push(
+          Object.freeze({
+            id,
+            branchId,
+            eventSeq,
+            diffRef: requiredString(record, "diffRef", lineNumber),
           }),
         );
         break;
@@ -384,6 +441,7 @@ export function parseChronosJsonl(
     branches: Object.freeze([...branches.values()].map((it) => it.branch)),
     events: Object.freeze(events),
     checkpoints: Object.freeze(checkpoints),
+    deltas: Object.freeze(deltas),
     diagnostics: Object.freeze(diagnostics),
   });
 }

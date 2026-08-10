@@ -3,6 +3,7 @@ import { Buffer } from "node:buffer";
 import {
   mkdirSync,
   mkdtempSync,
+  existsSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -15,7 +16,9 @@ import { canonicalEnvelope, logicalSequence } from "@chronos/protocol";
 import {
   ContentStore,
   captureWorkspace,
+  diffManifests,
   serializeManifest,
+  serializeManifestDiff,
 } from "@chronos/snapshots";
 import {
   ChronosRepository,
@@ -143,6 +146,96 @@ test("a branch reconstructs its workspace and owns its instruction", (t) => {
   assert.deepEqual(
     owned.map((item) => item.id),
     [created.instructionEvent.id],
+  );
+});
+
+test("a branch reconstructs through an ordered delta chain", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "chronos-branching-delta-"));
+  const storage = openStorage({ path: IN_MEMORY_PATH });
+  t.after(() => {
+    storage.close();
+    rmSync(root, { force: true, recursive: true, maxRetries: 5 });
+  });
+
+  const baseWorkspace = join(root, "base");
+  mkdirSync(join(baseWorkspace, "src"), { recursive: true });
+  writeFileSync(join(baseWorkspace, "src", "upload.ts"), "export const retries = 0;\n");
+  writeFileSync(join(baseWorkspace, "keep.txt"), "same\n");
+
+  const store = new ContentStore({ root: join(root, "store") });
+  const { manifest: baseManifest } = captureWorkspace({
+    workspaceRoot: baseWorkspace,
+    store,
+  });
+  const manifestRef = store.put(
+    new Uint8Array(Buffer.from(serializeManifest(baseManifest), "utf8")),
+  );
+
+  writeFileSync(join(baseWorkspace, "src", "upload.ts"), "export const retries = 3;\n");
+  writeFileSync(join(baseWorkspace, "src", "backoff.ts"), "export const delay = 10;\n");
+  rmSync(join(baseWorkspace, "keep.txt"));
+  const { manifest: targetManifest } = captureWorkspace({
+    workspaceRoot: baseWorkspace,
+    store,
+  });
+  const diff = diffManifests(baseManifest, targetManifest);
+  const diffRef = store.put(
+    new Uint8Array(Buffer.from(serializeManifestDiff(diff), "utf8")),
+  );
+
+  const repository = new ChronosRepository(storage);
+  repository.insertSession({
+    id: "s1",
+    source: "fixture",
+    createdAt: OCCURRED_AT,
+  });
+  repository.insertBranch({ id: "root", sessionId: "s1", state: "ready" });
+  repository.appendEvents([
+    event("r1", 1, "instruction"),
+    event("r2", 2, "filesystem_change"),
+    event("r3", 3, "filesystem_change"),
+  ]);
+  repository.insertCheckpoint({
+    id: "cp2",
+    branchId: "root",
+    eventSeq: seq(2),
+    manifestRef,
+  });
+  repository.insertDelta({
+    id: "d3",
+    branchId: "root",
+    eventSeq: seq(3),
+    diffRef,
+  });
+
+  const created = createBranch({
+    repository,
+    store,
+    workspacesRoot: join(root, "workspaces"),
+    sessionId: "s1",
+    parentBranchId: "root",
+    forkSeq: seq(3),
+    instruction: "keep the backoff",
+    branchId: "retry",
+  });
+
+  assert.equal(
+    readFileSync(
+      join(created.launchPlan.workspacePath, "src", "upload.ts"),
+      "utf8",
+    ),
+    "export const retries = 3;\n",
+  );
+  assert.equal(
+    readFileSync(
+      join(created.launchPlan.workspacePath, "src", "backoff.ts"),
+      "utf8",
+    ),
+    "export const delay = 10;\n",
+  );
+  assert.equal(
+    existsSync(join(created.launchPlan.workspacePath, "keep.txt")),
+    false,
   );
 });
 

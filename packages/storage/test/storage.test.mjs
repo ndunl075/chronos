@@ -143,7 +143,7 @@ test("an actual v1 database migrates before accepting provider recording events"
   }
 
   const storage = track(openStorage({ path }));
-  assert.equal(storage.schemaVersion, 2);
+  assert.equal(storage.schemaVersion, LATEST_SCHEMA_VERSION);
   insertEvent(storage._database(), "after-v2", "recording-root", 1);
   assert.equal(
     storage

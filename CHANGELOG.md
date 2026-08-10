@@ -5,6 +5,21 @@ All notable changes to Chronos are documented here. This project follows
 still include breaking changes to the storage schema, protocol, or CLI. This
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] — Persisted delta reconstruction
+
+### Added
+
+- **Persisted delta reconstruction:** a `Delta` protocol record, canonical
+  `ManifestDiff` serialize/parse/apply in `@chronos/snapshots`, storage
+  schema v3 (`delta` table), Chronos JSONL `delta` records, import
+  persistence, capability computation that emits `checkpoint_plus_deltas`
+  when every intervening mutating boundary has a delta, and branch/launch
+  restore that materializes the final manifest from a checkpoint plus the
+  ordered delta chain.
+- **Live delta capture:** `chronos record` still writes a full baseline
+  checkpoint, then stores a content-addressed `ManifestDiff` delta (not
+  another full checkpoint) at every successful post-tool boundary.
+
 ## [0.1.0] — v0.1 completion
 
 The first complete, reproducible slice: import an observed transcript or

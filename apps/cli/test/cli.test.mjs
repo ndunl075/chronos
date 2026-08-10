@@ -27,8 +27,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   ContentStore,
+  applyManifestDiff,
   captureWorkspace,
   parseManifest,
+  parseManifestDiff,
   serializeManifest,
 } from "@chronos/snapshots";
 import { computeEventCapabilities, indexSession } from "@chronos/core";
@@ -616,7 +618,8 @@ test("record checkpoints a fake Codex stream without putting instructions in arg
   assert.equal(response.exitCode, 0, response.err);
   const result = JSON.parse(response.out);
   assert.equal(result.providerSessionId, "thread-fake");
-  assert.equal(result.checkpoints, 2);
+  assert.equal(result.checkpoints, 1);
+  assert.equal(result.deltas, 1);
   assert.equal(commands.length, 2);
   assert.equal(isAbsolute(commands[0].executable), true);
   assert.equal(commands[0].executable, realpathSync.native(process.execPath));
@@ -649,16 +652,26 @@ test("record checkpoints a fake Codex stream without putting instructions in arg
   const checkpoints = repository.listCheckpoints(result.branchId);
   assert.deepEqual(
     checkpoints.map((item) => item.eventSeq),
-    [1, 5],
+    [1],
+  );
+  const deltas = repository.listDeltas(result.branchId);
+  assert.deepEqual(
+    deltas.map((item) => item.eventSeq),
+    [5],
   );
   const store = new ContentStore({ root: join(box.home, "store") });
-  const manifest = parseManifest(
-    Buffer.from(store.get(checkpoints[1].manifestRef)).toString("utf8"),
+  const baseline = parseManifest(
+    Buffer.from(store.get(checkpoints[0].manifestRef)).toString("utf8"),
   );
+  const diff = parseManifestDiff(
+    Buffer.from(store.get(deltas[0].diffRef)).toString("utf8"),
+  );
+  const manifest = applyManifestDiff(baseline, diff);
   assert.deepEqual(
     manifest.files.map((item) => item.path),
     ["after.txt", "before.txt"],
   );
+  assert.equal(events[4].payload.data.diffRef, deltas[0].diffRef);
   assert.equal(
     result.baselineExcluded.some((item) => item.path === ".chronos"),
     true,
@@ -726,7 +739,11 @@ test("record checkpoints a Codex completion-only call/result as one batch", asyn
   );
   assert.deepEqual(
     repository.listCheckpoints(result.branchId).map((item) => item.eventSeq),
-    [1, 5],
+    [1],
+  );
+  assert.deepEqual(
+    repository.listDeltas(result.branchId).map((item) => item.eventSeq),
+    [5],
   );
 });
 
@@ -946,21 +963,24 @@ test("Codex file_change completion captures the changed workspace", async (t) =>
     ).branchability.reason,
     "missing_delta",
   );
-  assert.equal(
-    computeEventCapabilities(
-      indexSession(repository.loadSessionGraph(result.sessionId)),
-      result.branchId,
-      5,
-    ).branchability.status,
-    "branchable",
+  const atChange = computeEventCapabilities(
+    indexSession(repository.loadSessionGraph(result.sessionId)),
+    result.branchId,
+    5,
   );
-  const checkpoint = repository.listCheckpoints(result.branchId).at(-1);
-  const manifest = parseManifest(
-    Buffer.from(
-      new ContentStore({ root: join(box.home, "store") }).get(
-        checkpoint.manifestRef,
-      ),
-    ).toString("utf8"),
+  assert.equal(atChange.branchability.status, "branchable");
+  assert.equal(
+    atChange.branchability.reconstruction.kind,
+    "checkpoint_plus_deltas",
+  );
+  const checkpoint = repository.listCheckpoints(result.branchId)[0];
+  const delta = repository.listDeltas(result.branchId)[0];
+  const store = new ContentStore({ root: join(box.home, "store") });
+  const manifest = applyManifestDiff(
+    parseManifest(
+      Buffer.from(store.get(checkpoint.manifestRef)).toString("utf8"),
+    ),
+    parseManifestDiff(Buffer.from(store.get(delta.diffRef)).toString("utf8")),
   );
   assert.deepEqual(
     manifest.files.map((file) => file.path),
@@ -1131,7 +1151,11 @@ test("Claude record checkpoints only the final result in one provider record", a
   );
   assert.deepEqual(
     repository.listCheckpoints(result.branchId).map((item) => item.eventSeq),
-    [1, 7],
+    [1],
+  );
+  assert.deepEqual(
+    repository.listDeltas(result.branchId).map((item) => item.eventSeq),
+    [7],
   );
 });
 
@@ -1256,9 +1280,9 @@ test("a failed final transaction persists none of Claude's two-result batch", as
     const sabotage = openStorage({ path: join(box.home, "chronos.sqlite") });
     try {
       sabotage._database().exec(`
-        CREATE TRIGGER reject_post_tool_checkpoint
-        BEFORE INSERT ON checkpoint WHEN NEW.event_seq > 1
-        BEGIN SELECT RAISE(ABORT, 'forced checkpoint failure'); END
+        CREATE TRIGGER reject_post_tool_delta
+        BEFORE INSERT ON delta
+        BEGIN SELECT RAISE(ABORT, 'forced delta failure'); END
       `);
     } finally {
       sabotage.close();
@@ -1483,9 +1507,9 @@ test("a checkpoint transaction failure persists a dirty failed terminal boundary
     const sabotage = openStorage({ path: join(box.home, "chronos.sqlite") });
     try {
       sabotage._database().exec(`
-        CREATE TRIGGER reject_post_tool_checkpoint
-        BEFORE INSERT ON checkpoint WHEN NEW.event_seq > 1
-        BEGIN SELECT RAISE(ABORT, 'forced checkpoint failure'); END
+        CREATE TRIGGER reject_post_tool_delta
+        BEFORE INSERT ON delta
+        BEGIN SELECT RAISE(ABORT, 'forced delta failure'); END
       `);
     } finally {
       sabotage.close();

@@ -16,10 +16,13 @@ session          exactly once, the first record in the file
 branch           at least once; a parent is declared before its children
 event            declared after its owning branch
 checkpoint       declared after the event it captures
+delta            declared after the event it captures
 ```
 
 Records of different kinds may otherwise interleave. Order is significant only
 in that a record may not reference something the file has not declared yet.
+A given `(branchId, eventSeq)` holds either a `checkpoint` or a `delta`, never
+both.
 
 ## `session`
 
@@ -115,6 +118,26 @@ A checkpoint names the snapshot manifest capturing the filesystem state after
 the event at `eventSeq`. One checkpoint per `(branchId, eventSeq)`. Events with
 no checkpoint that deltas can reach are shown as non-branchable rather than
 silently restored from the wrong state.
+
+## `delta`
+
+```json
+{
+  "type": "delta",
+  "schemaVersion": 1,
+  "id": "d_0004",
+  "branchId": "b_root",
+  "eventSeq": 4,
+  "diffRef": "sha256:9ab3..."
+}
+```
+
+A delta names a content-addressed `ManifestDiff` blob that patches the nearest
+prior reconstructable full state (a checkpoint, or that checkpoint plus earlier
+deltas) up to the filesystem state after `eventSeq`. One delta per
+`(branchId, eventSeq)`, and never at a sequence that already holds a
+checkpoint. Branching applies the ordered delta chain on top of the checkpoint
+`computeEventCapabilities` selected for that target.
 
 ## Redaction
 

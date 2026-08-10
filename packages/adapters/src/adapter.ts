@@ -1,4 +1,10 @@
-import type { Branch, Checkpoint, Event, Session } from "@chronos/protocol";
+import type {
+  Branch,
+  Checkpoint,
+  Delta,
+  Event,
+  Session,
+} from "@chronos/protocol";
 
 import type { RedactionPolicy } from "./redaction.js";
 
@@ -56,6 +62,7 @@ export interface ImportedSession {
   readonly branches: readonly Branch[];
   readonly events: readonly Event[];
   readonly checkpoints: readonly Checkpoint[];
+  readonly deltas: readonly Delta[];
   readonly diagnostics: readonly ImportDiagnostic[];
 }
 

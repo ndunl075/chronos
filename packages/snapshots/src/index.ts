@@ -25,8 +25,11 @@ export {
   type PathPolicy,
 } from "./policy.js";
 export {
+  SNAPSHOT_DIFF_VERSION,
   SNAPSHOT_HASH_ALGORITHM,
   SNAPSHOT_MANIFEST_VERSION,
+  applyManifestDiff,
+  applyManifestDiffChain,
   blobRef,
   buildManifest,
   contentRefEquals,
@@ -34,8 +37,10 @@ export {
   isContentRef,
   manifestBlobRefs,
   parseManifest,
+  parseManifestDiff,
   resolveManifestLimits,
   serializeManifest,
+  serializeManifestDiff,
   verifyManifest,
   type FileMode,
   type ManifestChange,

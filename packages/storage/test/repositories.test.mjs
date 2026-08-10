@@ -94,6 +94,50 @@ test("canonical records round-trip through the repositories", (t) => {
   assert.equal(repository.getEvent("missing"), undefined);
 });
 
+test("deltas persist, load with the session graph, and cannot share a sequence with a checkpoint", (t) => {
+  const repository = openRepository(t);
+  repository.appendEvents([
+    event("r1", "root", 1, "system"),
+    event("r2", "root", 2, "filesystem_change"),
+    event("r3", "root", 3, "filesystem_change"),
+  ]);
+  repository.insertCheckpoint({
+    id: "cp1",
+    branchId: "root",
+    eventSeq: seq(1),
+    manifestRef: "sha256:base",
+  });
+  const delta = repository.insertDelta({
+    id: "d2",
+    branchId: "root",
+    eventSeq: seq(2),
+    diffRef: "sha256:diff",
+  });
+  assert.deepEqual(repository.listDeltas("root"), [delta]);
+  assert.deepEqual(repository.loadSessionGraph("s1").deltas, [delta]);
+
+  assert.throws(
+    () =>
+      repository.insertDelta({
+        id: "d1",
+        branchId: "root",
+        eventSeq: seq(1),
+        diffRef: "sha256:nope",
+      }),
+    code("CONSTRAINT_VIOLATION"),
+  );
+  assert.throws(
+    () =>
+      repository.insertCheckpoint({
+        id: "cp2",
+        branchId: "root",
+        eventSeq: seq(2),
+        manifestRef: "sha256:nope",
+      }),
+    code("CONSTRAINT_VIOLATION"),
+  );
+});
+
 test("timeline pages are ordered, bounded, and payload-free", (t) => {
   const repository = openRepository(t);
   repository.appendEvents(

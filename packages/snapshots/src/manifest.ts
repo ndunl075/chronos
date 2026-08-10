@@ -10,6 +10,9 @@ import {
 /** The manifest schema version this build writes. */
 export const SNAPSHOT_MANIFEST_VERSION = 1;
 
+/** The serialized ManifestDiff schema version this build writes. */
+export const SNAPSHOT_DIFF_VERSION = 1;
+
 export const SNAPSHOT_HASH_ALGORITHM = "sha256";
 
 const REF_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -349,6 +352,188 @@ export function diffManifests(
   });
 }
 
+/**
+ * Apply a diff to a base manifest, producing the target state. Every `before`
+ * entry must match the base exactly: a mismatched chain is a corrupt restore,
+ * not a best-effort patch.
+ */
+export function applyManifestDiff(
+  base: SnapshotManifest,
+  diff: ManifestDiff,
+  limits?: ManifestLimits,
+): SnapshotManifest {
+  const files = new Map(base.files.map((file) => [file.path, file]));
+  const directories = new Set(base.directories);
+
+  for (const removed of diff.removed) {
+    const existing = files.get(removed.path);
+    if (
+      existing === undefined ||
+      existing.digest !== removed.digest ||
+      existing.mode !== removed.mode ||
+      existing.size !== removed.size
+    ) {
+      fail(
+        "DIGEST_MISMATCH",
+        `Diff removes a file that is not in the base: ${removed.path}`,
+        { path: removed.path },
+      );
+    }
+    files.delete(removed.path);
+  }
+
+  for (const path of diff.removedDirectories) {
+    if (!directories.has(path)) {
+      fail(
+        "INVALID_MANIFEST",
+        `Diff removes a directory that is not in the base: ${path}`,
+        { path },
+      );
+    }
+    directories.delete(path);
+  }
+
+  for (const change of diff.modified) {
+    if (change.before.path !== change.after.path) {
+      fail(
+        "INVALID_MANIFEST",
+        "A modified file must keep the same path",
+        { path: change.before.path },
+      );
+    }
+    const existing = files.get(change.before.path);
+    if (
+      existing === undefined ||
+      existing.digest !== change.before.digest ||
+      existing.mode !== change.before.mode ||
+      existing.size !== change.before.size
+    ) {
+      fail(
+        "DIGEST_MISMATCH",
+        `Diff modifies a file that is not in the base: ${change.before.path}`,
+        { path: change.before.path },
+      );
+    }
+    files.set(change.after.path, change.after);
+  }
+
+  for (const added of diff.added) {
+    if (files.has(added.path)) {
+      fail(
+        "INVALID_MANIFEST",
+        `Diff adds a file that already exists: ${added.path}`,
+        { path: added.path },
+      );
+    }
+    files.set(added.path, added);
+  }
+
+  for (const path of diff.addedDirectories) {
+    if (directories.has(path)) {
+      fail(
+        "INVALID_MANIFEST",
+        `Diff adds a directory that already exists: ${path}`,
+        { path },
+      );
+    }
+    directories.add(path);
+  }
+
+  const result = buildManifest(
+    { files: [...files.values()], directories: [...directories] },
+    limits,
+  );
+  let unchangedFiles = 0;
+  const baseByPath = new Map(base.files.map((file) => [file.path, file]));
+  for (const file of result.files) {
+    const previous = baseByPath.get(file.path);
+    if (
+      previous !== undefined &&
+      previous.digest === file.digest &&
+      previous.mode === file.mode
+    ) {
+      unchangedFiles += 1;
+    }
+  }
+  if (diff.unchangedFiles !== unchangedFiles) {
+    fail(
+      "INVALID_MANIFEST",
+      "Diff unchanged-file count does not match the base",
+      { recorded: diff.unchangedFiles, computed: unchangedFiles },
+    );
+  }
+  return result;
+}
+
+/** Apply an ordered chain of diffs, the form a delta reconstruction uses. */
+export function applyManifestDiffChain(
+  base: SnapshotManifest,
+  diffs: readonly ManifestDiff[],
+  limits?: ManifestLimits,
+): SnapshotManifest {
+  let current = base;
+  for (const diff of diffs) {
+    current = applyManifestDiff(current, diff, limits);
+  }
+  return current;
+}
+
+/** The exact bytes a ManifestDiff is addressed by. */
+export function serializeManifestDiff(diff: ManifestDiff): string {
+  return canonicalizeDiff(normalizeDiff(diff));
+}
+
+export function parseManifestDiff(
+  serialized: string,
+  limits?: ManifestLimits,
+): ManifestDiff {
+  if (typeof serialized !== "string") {
+    fail("INVALID_MANIFEST", "A serialized diff must be a string");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serialized) as unknown;
+  } catch (error) {
+    fail("INVALID_MANIFEST", "A serialized diff must be JSON", {
+      detail: error instanceof Error ? error.message : "unparseable",
+    });
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    fail("INVALID_MANIFEST", "A serialized diff must be a JSON object");
+  }
+  const record = parsed as Record<string, unknown>;
+  if (record["version"] !== SNAPSHOT_DIFF_VERSION) {
+    fail("INVALID_MANIFEST", "Unsupported diff version", {
+      supported: SNAPSHOT_DIFF_VERSION,
+    });
+  }
+  if (record["algorithm"] !== SNAPSHOT_HASH_ALGORITHM) {
+    fail("INVALID_MANIFEST", "Unsupported diff hash algorithm");
+  }
+  const diff = normalizeDiff(
+    {
+      added: projectFiles(record["added"], "added", limits),
+      modified: projectChanges(record["modified"], limits),
+      removed: projectFiles(record["removed"], "removed", limits),
+      addedDirectories: projectDirectories(
+        record["addedDirectories"],
+        "addedDirectories",
+        limits,
+      ),
+      removedDirectories: projectDirectories(
+        record["removedDirectories"],
+        "removedDirectories",
+        limits,
+      ),
+      unchangedFiles: record["unchangedFiles"] as number,
+    },
+  );
+  if (serializeManifestDiff(diff) !== serialized) {
+    fail("INVALID_MANIFEST", "A diff must be in canonical form");
+  }
+  return diff;
+}
+
 function canonicalize(
   manifest: Omit<SnapshotManifest, "ref"> | SnapshotManifest,
 ): string {
@@ -364,6 +549,174 @@ function canonicalize(
     directories: manifest.directories,
     totalBytes: manifest.totalBytes,
   });
+}
+
+function canonicalizeDiff(
+  diff: ManifestDiff & {
+    readonly version?: number;
+    readonly algorithm?: string;
+  },
+): string {
+  return JSON.stringify({
+    version: SNAPSHOT_DIFF_VERSION,
+    algorithm: SNAPSHOT_HASH_ALGORITHM,
+    added: diff.added.map(fileRecord),
+    modified: diff.modified.map((change) => ({
+      before: fileRecord(change.before),
+      after: fileRecord(change.after),
+    })),
+    removed: diff.removed.map(fileRecord),
+    addedDirectories: diff.addedDirectories,
+    removedDirectories: diff.removedDirectories,
+    unchangedFiles: diff.unchangedFiles,
+  });
+}
+
+function fileRecord(file: ManifestFile): Readonly<{
+  path: string;
+  mode: FileMode;
+  size: number;
+  digest: string;
+}> {
+  return {
+    path: file.path,
+    mode: file.mode,
+    size: file.size,
+    digest: file.digest,
+  };
+}
+
+function normalizeDiff(input: ManifestDiff): ManifestDiff {
+  if (!Number.isSafeInteger(input.unchangedFiles) || input.unchangedFiles < 0) {
+    fail(
+      "INVALID_MANIFEST",
+      "Diff unchangedFiles must be a non-negative integer",
+    );
+  }
+  const added = sortFiles(input.added);
+  const removed = sortFiles(input.removed);
+  const modified = [...input.modified]
+    .map((change) =>
+      Object.freeze({
+        before: normalizeFile(change.before),
+        after: normalizeFile(change.after),
+      }),
+    )
+    .sort((left, right) =>
+      compareWorkspacePaths(left.after.path, right.after.path),
+    );
+  const seen = new Set<string>();
+  for (const file of [...added, ...removed, ...modified.map((c) => c.after)]) {
+    if (seen.has(file.path)) {
+      fail("INVALID_MANIFEST", `Duplicate diff path: ${file.path}`, {
+        path: file.path,
+      });
+    }
+    seen.add(file.path);
+  }
+  for (const change of modified) {
+    if (change.before.path !== change.after.path) {
+      fail("INVALID_MANIFEST", "A modified file must keep the same path", {
+        path: change.before.path,
+      });
+    }
+  }
+  return Object.freeze({
+    added: Object.freeze(added),
+    modified: Object.freeze(modified),
+    removed: Object.freeze(removed),
+    addedDirectories: Object.freeze(sortPaths([...input.addedDirectories])),
+    removedDirectories: Object.freeze(
+      sortPaths([...input.removedDirectories]),
+    ),
+    unchangedFiles: input.unchangedFiles,
+  });
+}
+
+function normalizeFile(file: ManifestFileInput | ManifestFile): ManifestFile {
+  const path = workspacePath(file.path).value;
+  const mode = file.mode ?? "file";
+  if (mode !== "file" && mode !== "executable") {
+    fail("INVALID_MANIFEST", `Unsupported file mode for ${path}`, { path });
+  }
+  const size = file.size;
+  if (!Number.isSafeInteger(size) || size < 0) {
+    fail("INVALID_MANIFEST", `Invalid size for ${path}`, { path });
+  }
+  if (!isContentRef(file.digest)) {
+    fail("INVALID_MANIFEST", `Invalid content address for ${path}`, { path });
+  }
+  return Object.freeze({ path, mode, size, digest: file.digest });
+}
+
+function sortFiles(
+  files: readonly (ManifestFileInput | ManifestFile)[],
+): ManifestFile[] {
+  return [...files]
+    .map(normalizeFile)
+    .sort((left, right) => compareWorkspacePaths(left.path, right.path));
+}
+
+function sortPaths(paths: readonly string[]): string[] {
+  return [...paths]
+    .map((path) => workspacePath(path).value)
+    .sort(compareWorkspacePaths);
+}
+
+function projectFiles(
+  value: unknown,
+  label: string,
+  limits?: ManifestLimits,
+): readonly ManifestFile[] {
+  const items = list(value as readonly ManifestFileInput[] | undefined, label);
+  return items.map((item) => {
+    const file = normalizeFile(item);
+    if (limits !== undefined) {
+      const { maxFileBytes } = resolveManifestLimits(limits);
+      if (file.size > maxFileBytes) {
+        fail("LIMIT_EXCEEDED", `File exceeds the size cap: ${file.path}`, {
+          path: file.path,
+          size: file.size,
+          maxFileBytes,
+        });
+      }
+    }
+    return file;
+  });
+}
+
+function projectChanges(
+  value: unknown,
+  limits?: ManifestLimits,
+): readonly ManifestChange[] {
+  const items = list(value as readonly unknown[] | undefined, "modified");
+  return items.map((item) => {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) {
+      fail("INVALID_MANIFEST", "Diff modified entry must be an object");
+    }
+    const record = item as Record<string, unknown>;
+    return Object.freeze({
+      before: projectFiles(
+        [record["before"] as ManifestFileInput],
+        "before",
+        limits,
+      )[0]!,
+      after: projectFiles(
+        [record["after"] as ManifestFileInput],
+        "after",
+        limits,
+      )[0]!,
+    });
+  });
+}
+
+function projectDirectories(
+  value: unknown,
+  label: string,
+  limits?: ManifestLimits,
+): readonly string[] {
+  const items = list(value as readonly string[] | undefined, label);
+  return items.map((item) => workspacePath(item, limits?.path).value);
 }
 
 function refOf(canonical: string): string {

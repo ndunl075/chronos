@@ -5,6 +5,8 @@ import { TextEncoder } from "node:util";
 
 import {
   SNAPSHOT_MANIFEST_VERSION,
+  applyManifestDiff,
+  applyManifestDiffChain,
   blobRef,
   buildManifest,
   contentRefEquals,
@@ -12,7 +14,9 @@ import {
   isContentRef,
   manifestBlobRefs,
   parseManifest,
+  parseManifestDiff,
   serializeManifest,
+  serializeManifestDiff,
   verifyManifest,
 } from "../dist/index.js";
 
@@ -235,6 +239,66 @@ test("a diff describes what a restore has to apply", () => {
     [[], [], []],
   );
   assert.equal(unchanged.unchangedFiles, base.files.length);
+});
+
+test("applying a diff reconstructs the target manifest", () => {
+  const base = buildManifest({
+    files: [
+      file("keep.txt", "same"),
+      file("change.txt", "before"),
+      file("gone.txt", "removed"),
+    ],
+    directories: ["old-empty"],
+  });
+  const target = buildManifest({
+    files: [
+      file("keep.txt", "same"),
+      file("change.txt", "after"),
+      file("new.txt", "added"),
+    ],
+    directories: ["new-empty"],
+  });
+  const diff = diffManifests(base, target);
+  const applied = applyManifestDiff(base, diff);
+  assert.equal(applied.ref, target.ref);
+  assert.equal(
+    applyManifestDiffChain(base, [diff]).ref,
+    target.ref,
+  );
+});
+
+test("manifest diffs round-trip through their canonical serialization", () => {
+  const base = buildManifest({
+    files: [file("a.txt", "one"), file("b.txt", "two")],
+    directories: ["empty"],
+  });
+  const target = buildManifest({
+    files: [file("a.txt", "changed"), file("c.txt", "three", "executable")],
+    directories: ["other"],
+  });
+  const diff = diffManifests(base, target);
+  assert.equal(diff.modified.length, 1);
+  const serialized = serializeManifestDiff(diff);
+  const parsed = parseManifestDiff(serialized);
+  assert.deepEqual(parsed, diff);
+  assert.equal(serializeManifestDiff(parsed), serialized);
+  assert.throws(
+    () => parseManifestDiff(serialized.replace('"sha256:', '"SHA256:')),
+    (error) => error.code === "INVALID_MANIFEST",
+  );
+  assert.throws(
+    () =>
+      applyManifestDiff(base, {
+        ...diff,
+        modified: [
+          {
+            before: { ...diff.modified[0].before, digest: ref("wrong") },
+            after: diff.modified[0].after,
+          },
+        ],
+      }),
+    (error) => error.code === "DIGEST_MISMATCH",
+  );
 });
 
 test("blob addresses are deduplicated for the content store", () => {

@@ -1,6 +1,6 @@
 {
   "name": "@chronos/storage",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "files": [
@@ -13,9 +13,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@chronos/protocol": "0.1.0"
+    "@chronos/protocol": "0.2.0"
   },
   "devDependencies": {
-    "@chronos/core": "0.1.0"
+    "@chronos/core": "0.2.0"
   }
 }

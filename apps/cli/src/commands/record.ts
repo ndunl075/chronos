@@ -33,8 +33,11 @@ import {
   ContentStore,
   SnapshotError,
   captureWorkspace,
+  diffManifests,
   serializeManifest,
+  serializeManifestDiff,
   type CaptureResult,
+  type SnapshotManifest,
 } from "@chronos/snapshots";
 import { ChronosRepository, openStorage } from "@chronos/storage";
 
@@ -176,6 +179,8 @@ export async function runRecord(
   const branchId = `${sessionId}:root`;
   let sequence = 0;
   let checkpoints = 0;
+  let deltas = 0;
+  let previousManifest: SnapshotManifest = baseline.capture.manifest;
   let providerSessionId: string | undefined;
   let uncheckpointedMutation = false;
   const normalizer = createProviderStreamNormalizer(agent);
@@ -231,10 +236,12 @@ export async function runRecord(
           sessionId,
           sequence,
           normalized,
+          previousManifest,
         );
         sequence = boundary.sequence;
-        if (boundary.checkpointed) {
-          checkpoints += 1;
+        if (boundary.captured) {
+          previousManifest = boundary.manifest;
+          deltas += 1;
           uncheckpointedMutation = normalizer.hasPendingToolCalls;
         } else if (
           normalized.some(
@@ -308,6 +315,7 @@ export async function runRecord(
   context.reporter.line(`Recorded session ${sessionId} with ${agent}`);
   context.reporter.line(`  events       ${String(sequence)}`);
   context.reporter.line(`  checkpoints  ${String(checkpoints)}`);
+  context.reporter.line(`  deltas       ${String(deltas)}`);
   context.reporter.line(`  database     ${home.databasePath}`);
   context.reporter.warn(
     "Workspace capture excludes reported paths and cannot detect concurrent or external writers",
@@ -319,6 +327,7 @@ export async function runRecord(
     providerSessionId,
     events: sequence,
     checkpoints,
+    deltas,
     databasePath: home.databasePath,
     baselineExcluded: safeExclusions(baseline.capture),
   });
@@ -332,7 +341,15 @@ function recordProviderBatch(
   sessionId: string,
   sequence: number,
   items: readonly StreamEvent[],
-): Readonly<{ sequence: number; checkpointed: boolean }> {
+  previousManifest: SnapshotManifest,
+): Readonly<
+  | { sequence: number; captured: false }
+  | {
+      sequence: number;
+      captured: true;
+      manifest: SnapshotManifest;
+    }
+> {
   const batch = items.map((item, index) =>
     makeEvent(
       branchId,
@@ -348,12 +365,22 @@ function recordProviderBatch(
     repository.appendEvents(batch);
     return Object.freeze({
       sequence: sequence + batch.length,
-      checkpointed: false,
+      captured: false,
     });
   }
   const boundaryTime = results.at(-1)!.occurredAt;
   try {
-    const captured = durableCapture(workspace, store);
+    const capture = captureWorkspace({ workspaceRoot: workspace, store });
+    const diffRef = store.put(
+      new Uint8Array(
+        Buffer.from(
+          serializeManifestDiff(
+            diffManifests(previousManifest, capture.manifest),
+          ),
+          "utf8",
+        ),
+      ),
+    );
     const changed = makeEvent(
       branchId,
       sequence + batch.length + 1,
@@ -361,23 +388,24 @@ function recordProviderBatch(
       "Workspace captured after provider result batch",
       {
         toolResultEventIds: results.map((result) => result.id),
-        manifestRef: captured.manifestRef,
-        excluded: safeExclusions(captured.capture),
+        diffRef,
+        excluded: safeExclusions(capture),
       },
       boundaryTime,
     );
     repository.transaction(() => {
       repository.appendEvents([...batch, changed]);
-      repository.insertCheckpoint({
-        id: `${sessionId}:checkpoint:${String(changed.seq)}`,
+      repository.insertDelta({
+        id: `${sessionId}:delta:${String(changed.seq)}`,
         branchId,
         eventSeq: changed.seq,
-        manifestRef: captured.manifestRef,
+        diffRef,
       });
     });
     return Object.freeze({
       sequence: sequence + batch.length + 1,
-      checkpointed: true,
+      captured: true,
+      manifest: capture.manifest,
     });
   } catch (error) {
     if (!(error instanceof SnapshotError)) throw error;
@@ -395,7 +423,7 @@ function recordProviderBatch(
     repository.transaction(() => repository.appendEvents([...batch, failed]));
     return Object.freeze({
       sequence: sequence + batch.length + 1,
-      checkpointed: false,
+      captured: false,
     });
   }
 }

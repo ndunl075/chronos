@@ -116,6 +116,21 @@ export interface Checkpoint {
   readonly manifestRef: string;
 }
 
+/**
+ * A content-addressed filesystem patch from the nearest prior full state to
+ * the workspace after `eventSeq`. Restore applies an ordered chain of these
+ * on top of a checkpoint; a given `(branchId, eventSeq)` holds either a
+ * checkpoint or a delta, never both.
+ */
+export interface Delta {
+  readonly id: string;
+  readonly branchId: string;
+  /** The event whose post-event filesystem state this delta reaches. */
+  readonly eventSeq: LogicalSequence;
+  /** Content address of the canonical serialized ManifestDiff blob. */
+  readonly diffRef: string;
+}
+
 export interface ReplayItem<Payload extends JsonValue = JsonValue> {
   readonly eventId: string;
   /** Branch that owns the event; inherited context can span many branches. */

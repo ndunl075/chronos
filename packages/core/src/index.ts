@@ -8,6 +8,7 @@ import {
   type BranchabilityUnavailableReason,
   type Checkpoint,
   type ChildBranch,
+  type Delta,
   type Event,
   type EventCapabilities,
   type JsonValue,
@@ -32,6 +33,8 @@ export type CoreErrorCode =
   | "NON_CONTIGUOUS_EVENT"
   | "INVALID_CHECKPOINT"
   | "DUPLICATE_CHECKPOINT"
+  | "INVALID_DELTA"
+  | "DUPLICATE_DELTA"
   | "UNKNOWN_BRANCH"
   | "UNKNOWN_EVENT"
   | "INVALID_TARGET"
@@ -62,6 +65,7 @@ export interface SessionGraphInput {
   /** Import/append order is significant and must already be monotonic per owner. */
   readonly events: readonly Event[];
   readonly checkpoints?: readonly Checkpoint[];
+  readonly deltas?: readonly Delta[];
 }
 
 interface IndexedBranch {
@@ -79,6 +83,8 @@ export class SessionIndex {
   #branches: ReadonlyMap<string, IndexedBranch>;
   #eventsById: ReadonlyMap<string, Event>;
   #checkpoints: readonly Checkpoint[];
+  #deltas: readonly Delta[];
+  #deltaEventIds: ReadonlySet<string>;
 
   /** @internal Construct through indexSession. */
   constructor(
@@ -88,6 +94,8 @@ export class SessionIndex {
     branches: ReadonlyMap<string, IndexedBranch>,
     eventsById: ReadonlyMap<string, Event>,
     checkpoints: readonly Checkpoint[],
+    deltas: readonly Delta[],
+    deltaEventIds: ReadonlySet<string>,
   ) {
     if (token !== sessionIndexToken) {
       fail("INVALID_SESSION", "SessionIndex must be created by indexSession");
@@ -97,6 +105,8 @@ export class SessionIndex {
     this.#branches = branches;
     this.#eventsById = eventsById;
     this.#checkpoints = checkpoints;
+    this.#deltas = deltas;
+    this.#deltaEventIds = deltaEventIds;
     Object.freeze(this);
   }
 
@@ -114,12 +124,22 @@ export class SessionIndex {
   _checkpoints(): readonly Checkpoint[] {
     return this.#checkpoints;
   }
+
+  /** @internal */
+  _deltas(): readonly Delta[] {
+    return this.#deltas;
+  }
+
+  /** @internal Event ids that have a persisted delta for their owned sequence. */
+  _deltaEventIds(): ReadonlySet<string> {
+    return this.#deltaEventIds;
+  }
 }
 
 export function indexSession(input: SessionGraphInput): SessionIndex {
   const inputRecord = exactRecord(
     input,
-    ["session", "branches", "events", "checkpoints"],
+    ["session", "branches", "events", "checkpoints", "deltas"],
     "INVALID_SESSION",
     "Session graph",
   );
@@ -140,6 +160,9 @@ export function indexSession(input: SessionGraphInput): SessionIndex {
         "INVALID_SESSION",
         "Session checkpoints",
       )
+    : [];
+  const deltaValues = Object.hasOwn(inputRecord, "deltas")
+    ? safeArray(inputRecord.deltas, "INVALID_SESSION", "Session deltas")
     : [];
   const branches = new Map<string, Branch>();
 
@@ -187,8 +210,12 @@ export function indexSession(input: SessionGraphInput): SessionIndex {
 
   const owned = indexOwnedEvents(eventValues, branches);
   const ownedSequences = new Map<string, ReadonlySet<LogicalSequence>>();
+  const eventIdByOwnerSeq = new Map<string, string>();
   for (const [branchId, events] of owned) {
     ownedSequences.set(branchId, new Set(events.map((event) => event.seq)));
+    for (const event of events) {
+      eventIdByOwnerSeq.set(`${branchId}:${String(event.seq)}`, event.id);
+    }
   }
   const resolved = new Map<string, IndexedBranch>();
   for (const startId of branches.keys()) {
@@ -238,6 +265,29 @@ export function indexSession(input: SessionGraphInput): SessionIndex {
     resolved,
     ownedSequences,
   );
+  const checkpointKeys = new Set(
+    checkpoints.map(
+      (item) => `${item.branchId}:${String(item.eventSeq)}`,
+    ),
+  );
+  const deltas = indexDeltas(
+    deltaValues,
+    resolved,
+    ownedSequences,
+    checkpointKeys,
+  );
+  const deltaEventIds = new Set<string>();
+  for (const delta of deltas) {
+    const eventId = eventIdByOwnerSeq.get(
+      `${delta.branchId}:${String(delta.eventSeq)}`,
+    );
+    if (eventId === undefined) {
+      fail("INVALID_DELTA", "Delta must reference an owned event", {
+        deltaId: delta.id,
+      });
+    }
+    deltaEventIds.add(eventId);
+  }
   return new SessionIndex(
     sessionIndexToken,
     session,
@@ -245,6 +295,8 @@ export function indexSession(input: SessionGraphInput): SessionIndex {
     resolved,
     eventsById,
     checkpoints,
+    deltas,
+    deltaEventIds,
   );
 }
 
@@ -302,7 +354,7 @@ export function computeReplayContext(
 }
 
 export interface CapabilityEvidence {
-  /** Filesystem-change events with captured deltas, addressed by stable id. */
+  /** Events with captured deltas, addressed by stable id. */
   readonly availableDeltaEventIds?: readonly string[];
   /** Canonical payloads known to contain required redactions at replay time. */
   readonly redactedEventIds?: readonly string[];
@@ -374,26 +426,53 @@ export function computeEventCapabilities(
         effectiveRestoreSeq: target,
       };
     } else {
-      const mutatingBoundaries = visible.filter(
-        (item) =>
-          item.seq > checkpoint.eventSeq &&
-          (item.kind === "filesystem_change" ||
-            item.kind === "tool_result" ||
-            isUnknownWorkspaceError(item)),
-      );
-      // v0.1 persists full manifests only. A tool result without its paired
-      // checkpoint is dirty even when no filesystem_change was recorded, and
-      // caller-supplied delta evidence cannot turn it into reconstructable state.
-      if (mutatingBoundaries.length > 0) {
+      const mutatingBoundaries = visible.filter((item) => {
+        if (item.seq <= checkpoint.eventSeq) return false;
+        if (
+          item.kind === "filesystem_change" ||
+          isUnknownWorkspaceError(item)
+        ) {
+          return true;
+        }
+        // A tool_result is covered by a later filesystem_change in the same
+        // visible window (the live-record batch boundary). Only uncovered
+        // tool results remain dirty mutating boundaries that need their own
+        // delta.
+        if (item.kind !== "tool_result") return false;
+        return !visible.some(
+          (later) =>
+            later.seq > item.seq && later.kind === "filesystem_change",
+        );
+      });
+      const deltaEventSeqs: LogicalSequence[] = [];
+      let missing = false;
+      for (const boundary of mutatingBoundaries) {
+        if (!checkedEvidence.availableDeltaEventIds.has(boundary.id)) {
+          missing = true;
+          break;
+        }
+        deltaEventSeqs.push(boundary.seq);
+      }
+      if (missing) {
         firstFailure ??= "missing_delta";
         continue;
       }
-      reconstruction = {
-        kind: "exact",
-        checkpointId: checkpoint.id,
-        checkpointEventSeq: checkpoint.eventSeq,
-        effectiveRestoreSeq: target,
-      };
+      if (deltaEventSeqs.length === 0) {
+        reconstruction = {
+          kind: "exact",
+          checkpointId: checkpoint.id,
+          checkpointEventSeq: checkpoint.eventSeq,
+          effectiveRestoreSeq: target,
+        };
+      } else {
+        reconstruction = {
+          kind: "checkpoint_plus_deltas",
+          checkpointId: checkpoint.id,
+          checkpointEventSeq: checkpoint.eventSeq,
+          deltaEventSeqs: Object.freeze(deltaEventSeqs),
+          effectiveRestoreSeq: target,
+        };
+      }
     }
     return cloneFreeze({
       eventId: event.id,
@@ -558,6 +637,7 @@ function indexCheckpoints(
   ownedSequences: ReadonlyMap<string, ReadonlySet<LogicalSequence>>,
 ): readonly Checkpoint[] {
   const ids = new Set<string>();
+  const keys = new Set<string>();
   return Object.freeze(
     candidates.map((value) => {
       const candidate = projectCheckpoint(value);
@@ -568,6 +648,15 @@ function indexCheckpoints(
         );
       }
       ids.add(candidate.id);
+      const key = `${candidate.branchId}:${String(candidate.eventSeq)}`;
+      if (keys.has(key)) {
+        fail(
+          "DUPLICATE_CHECKPOINT",
+          "A sequence already holds a checkpoint",
+          { checkpointId: candidate.id },
+        );
+      }
+      keys.add(key);
       const owner = branches.get(candidate.branchId);
       if (
         owner === undefined ||
@@ -576,6 +665,50 @@ function indexCheckpoints(
       ) {
         fail("INVALID_CHECKPOINT", "Checkpoint must reference an owned event", {
           checkpointId: candidate.id,
+        });
+      }
+      return candidate;
+    }),
+  );
+}
+
+function indexDeltas(
+  candidates: readonly unknown[],
+  branches: ReadonlyMap<string, IndexedBranch>,
+  ownedSequences: ReadonlyMap<string, ReadonlySet<LogicalSequence>>,
+  checkpointKeys: ReadonlySet<string>,
+): readonly Delta[] {
+  const ids = new Set<string>();
+  const keys = new Set<string>();
+  return Object.freeze(
+    candidates.map((value) => {
+      const candidate = projectDelta(value);
+      if (ids.has(candidate.id)) {
+        fail("DUPLICATE_DELTA", `Duplicate delta id: ${candidate.id}`);
+      }
+      ids.add(candidate.id);
+      const key = `${candidate.branchId}:${String(candidate.eventSeq)}`;
+      if (keys.has(key)) {
+        fail("DUPLICATE_DELTA", "A sequence already holds a delta", {
+          deltaId: candidate.id,
+        });
+      }
+      if (checkpointKeys.has(key)) {
+        fail(
+          "INVALID_DELTA",
+          "A sequence cannot hold both a checkpoint and a delta",
+          { deltaId: candidate.id },
+        );
+      }
+      keys.add(key);
+      const owner = branches.get(candidate.branchId);
+      if (
+        owner === undefined ||
+        owner.branch.state !== "ready" ||
+        !ownedSequences.get(candidate.branchId)?.has(candidate.eventSeq)
+      ) {
+        fail("INVALID_DELTA", "Delta must reference an owned event", {
+          deltaId: candidate.id,
         });
       }
       return candidate;
@@ -780,6 +913,23 @@ function projectCheckpoint(value: unknown): Checkpoint {
   return Object.freeze({ id, branchId, eventSeq, manifestRef });
 }
 
+function projectDelta(value: unknown): Delta {
+  const record = exactRecord(
+    value,
+    ["id", "branchId", "eventSeq", "diffRef"],
+    "INVALID_DELTA",
+    "Delta",
+  );
+  const id = requiredString(record, "id", "INVALID_DELTA");
+  const branchId = requiredString(record, "branchId", "INVALID_DELTA");
+  const eventSeq = ownValue(record, "eventSeq", "INVALID_DELTA");
+  const diffRef = requiredString(record, "diffRef", "INVALID_DELTA");
+  if (!isLogicalSequence(eventSeq)) {
+    fail("INVALID_DELTA", "Delta sequence is invalid");
+  }
+  return Object.freeze({ id, branchId, eventSeq, diffRef });
+}
+
 interface ValidatedEvidence {
   readonly availableDeltaEventIds: ReadonlySet<string>;
   readonly redactedEventIds: ReadonlySet<string>;
@@ -799,11 +949,14 @@ function validateEvidence(
     "INVALID_EVIDENCE",
     "Capability evidence",
   );
-  const availableDeltaEventIds = evidenceEventIds(
+  const availableDeltaEventIds = new Set(index._deltaEventIds());
+  for (const id of evidenceEventIds(
     index,
     record,
     "availableDeltaEventIds",
-  );
+  )) {
+    availableDeltaEventIds.add(id);
+  }
   const redactedEventIds = evidenceEventIds(index, record, "redactedEventIds");
   const unusableCheckpoints = new Map<
     string,

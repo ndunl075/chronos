@@ -94,6 +94,7 @@ function toApiFailure(error: unknown): unknown {
     case "NOT_BRANCHABLE":
     case "UNSUPPORTED_RECONSTRUCTION":
     case "MISSING_CHECKPOINT":
+    case "MISSING_DELTA":
     case "RESTORE_FAILED":
       return apiFailure("conflict", error.message);
     default:

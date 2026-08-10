@@ -103,13 +103,38 @@ test("computes exact, delta, missing-delta, no-checkpoint, and state capabilitie
       .kind,
     "exact",
   );
-  const delta = computeEventCapabilities(index, "grand", seq(4), {
+  const missing = computeEventCapabilities(index, "grand", seq(4));
+  assert.equal(missing.branchability.reason, "missing_delta");
+
+  const withEvidence = computeEventCapabilities(index, "grand", seq(4), {
     availableDeltaEventIds: ["c3"],
   });
-  assert.equal(delta.branchability.reason, "missing_delta");
+  assert.equal(withEvidence.branchability.status, "branchable");
+  assert.deepEqual(withEvidence.branchability.reconstruction, {
+    kind: "checkpoint_plus_deltas",
+    checkpointId: "cp1",
+    checkpointEventSeq: seq(1),
+    deltaEventSeqs: [seq(3)],
+    effectiveRestoreSeq: seq(4),
+  });
+
+  const withIndexed = indexSession(
+    graph({
+      deltas: [
+        {
+          id: "d3",
+          branchId: "child",
+          eventSeq: seq(3),
+          diffRef: "sha256:delta",
+        },
+      ],
+    }),
+  );
+  const fromIndex = computeEventCapabilities(withIndexed, "grand", seq(4));
+  assert.equal(fromIndex.branchability.status, "branchable");
   assert.equal(
-    computeEventCapabilities(index, "grand", seq(4)).branchability.reason,
-    "missing_delta",
+    fromIndex.branchability.reconstruction.kind,
+    "checkpoint_plus_deltas",
   );
 
   const noCheckpoint = indexSession(graph({ checkpoints: [] }));
@@ -138,9 +163,57 @@ test("an uncheckpointed tool result is a dirty mutating boundary", () => {
     }),
   );
   assert.equal(
+    computeEventCapabilities(index, "root", seq(2)).branchability.reason,
+    "missing_delta",
+  );
+  assert.equal(
     computeEventCapabilities(index, "root", seq(2), {
       availableDeltaEventIds: ["result"],
-    }).branchability.reason,
+    }).branchability.reconstruction.kind,
+    "checkpoint_plus_deltas",
+  );
+});
+
+test("a tool result covered by a later filesystem_change delta is not its own boundary", () => {
+  const index = indexSession(
+    graph({
+      branches: [root],
+      events: [
+        event("baseline", "root", 1, "system"),
+        event("call", "root", 2, "tool_call"),
+        event("result", "root", 3, "tool_result"),
+        event("changed", "root", 4, "filesystem_change"),
+        event("note", "root", 5),
+      ],
+      checkpoints: [
+        {
+          id: "baseline-cp",
+          branchId: "root",
+          eventSeq: seq(1),
+          manifestRef: "m",
+        },
+      ],
+      deltas: [
+        {
+          id: "d4",
+          branchId: "root",
+          eventSeq: seq(4),
+          diffRef: "sha256:diff",
+        },
+      ],
+    }),
+  );
+  const atChange = computeEventCapabilities(index, "root", seq(5));
+  assert.equal(atChange.branchability.status, "branchable");
+  assert.deepEqual(atChange.branchability.reconstruction, {
+    kind: "checkpoint_plus_deltas",
+    checkpointId: "baseline-cp",
+    checkpointEventSeq: seq(1),
+    deltaEventSeqs: [seq(4)],
+    effectiveRestoreSeq: seq(5),
+  });
+  assert.equal(
+    computeEventCapabilities(index, "root", seq(3)).branchability.reason,
     "missing_delta",
   );
 });

@@ -7,20 +7,27 @@ import {
   CoreDomainError,
   indexSession,
   prepareBranchPlan,
+  resolveVisibleEvents,
 } from "@chronos/core";
 import {
   PROTOCOL_SCHEMA_VERSION,
   isLogicalSequence,
   type Branch,
+  type Checkpoint,
+  type Delta,
   type Event,
   type LaunchPlan,
   type LogicalSequence,
+  type Reconstruction,
 } from "@chronos/protocol";
 import {
   SnapshotError,
+  applyManifestDiffChain,
   parseManifest,
+  parseManifestDiff,
   restoreSnapshot,
   type ContentStore,
+  type SnapshotManifest,
 } from "@chronos/snapshots";
 import { StorageError, type ChronosRepository } from "@chronos/storage";
 
@@ -31,6 +38,7 @@ export type BranchErrorCode =
   | "NOT_BRANCHABLE"
   | "UNSUPPORTED_RECONSTRUCTION"
   | "MISSING_CHECKPOINT"
+  | "MISSING_DELTA"
   | "RESTORE_FAILED"
   | "STORAGE_FAILED";
 
@@ -68,6 +76,66 @@ export interface BranchCreation {
   readonly launchPlan: LaunchPlan;
   /** The instruction event the new branch now owns. */
   readonly instructionEvent: Event;
+}
+
+export interface MaterializeReconstructionOptions {
+  readonly store: ContentStore;
+  readonly checkpoints: readonly Checkpoint[];
+  readonly deltas: readonly Delta[];
+  readonly reconstruction: Reconstruction;
+  /**
+   * Visible owner branch id at each delta sequence. Required when applying a
+   * nonempty delta chain so a hidden same-seq record on another branch cannot
+   * be mistaken for the one the reconstruction ordered.
+   */
+  readonly deltaOwners?: ReadonlyMap<LogicalSequence, string>;
+}
+
+/**
+ * Resolve the final workspace manifest a reconstruction produces: the
+ * checkpoint alone for exact restores, or that checkpoint with each ordered
+ * delta applied for `checkpoint_plus_deltas`.
+ */
+export function materializeReconstructionManifest(
+  options: MaterializeReconstructionOptions,
+): SnapshotManifest {
+  const checkpoint = options.checkpoints.find(
+    (item) => item.id === options.reconstruction.checkpointId,
+  );
+  if (checkpoint === undefined) {
+    throw new BranchError(
+      "MISSING_CHECKPOINT",
+      "The checkpoint that event reconstructs from is missing",
+      { checkpointId: options.reconstruction.checkpointId },
+    );
+  }
+  const base = parseManifest(
+    new TextDecoder().decode(options.store.get(checkpoint.manifestRef)),
+  );
+  if (options.reconstruction.kind === "exact") {
+    return base;
+  }
+  const diffs = options.reconstruction.deltaEventSeqs.map((eventSeq) => {
+    const ownerId = options.deltaOwners?.get(eventSeq);
+    const resolved =
+      ownerId === undefined
+        ? options.deltas.find((item) => item.eventSeq === eventSeq)
+        : options.deltas.find(
+            (item) =>
+              item.branchId === ownerId && item.eventSeq === eventSeq,
+          );
+    if (resolved === undefined) {
+      throw new BranchError(
+        "MISSING_DELTA",
+        "A recorded delta required for reconstruction is missing",
+        { eventSeq },
+      );
+    }
+    return parseManifestDiff(
+      new TextDecoder().decode(options.store.get(resolved.diffRef)),
+    );
+  });
+  return applyManifestDiffChain(base, diffs);
 }
 
 /**
@@ -116,33 +184,23 @@ export function createBranch(options: CreateBranchOptions): BranchCreation {
   }
 
   const reconstruction = plan.reconstruction;
-  if (
-    reconstruction.kind === "checkpoint_plus_deltas" &&
-    reconstruction.deltaEventSeqs.length > 0
-  ) {
-    throw new BranchError(
-      "UNSUPPORTED_RECONSTRUCTION",
-      "Reconstructing from recorded deltas is not implemented yet",
-      { deltas: reconstruction.deltaEventSeqs.length },
-    );
-  }
-  const checkpoint = graph.checkpoints.find(
-    (item) => item.id === reconstruction.checkpointId,
+  const deltaOwners = new Map(
+    resolveVisibleEvents(
+      index,
+      options.parentBranchId,
+      options.forkSeq,
+    ).map((event) => [event.seq, event.branchId] as const),
   );
-  if (checkpoint === undefined) {
-    throw new BranchError(
-      "MISSING_CHECKPOINT",
-      "The checkpoint that event reconstructs from is missing",
-      { checkpointId: reconstruction.checkpointId },
-    );
-  }
-
   attempt("STORAGE_FAILED", () => repository.insertBranch(plan.branch));
   let workspacePath: string;
   try {
-    const manifest = parseManifest(
-      new TextDecoder().decode(options.store.get(checkpoint.manifestRef)),
-    );
+    const manifest = materializeReconstructionManifest({
+      store: options.store,
+      checkpoints: graph.checkpoints,
+      deltas: graph.deltas,
+      reconstruction,
+      deltaOwners,
+    });
     workspacePath = restoreSnapshot({
       manifest,
       store: options.store,
@@ -150,6 +208,7 @@ export function createBranch(options: CreateBranchOptions): BranchCreation {
     }).workspacePath;
   } catch (error) {
     settleFailed(repository, branchId);
+    if (error instanceof BranchError) throw error;
     if (error instanceof SnapshotError) {
       throw new BranchError(
         "RESTORE_FAILED",

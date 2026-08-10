@@ -10,22 +10,6 @@ next thing depends on), not by commitment or priority.
 
 ## Next up
 
-**Persisted delta reconstruction.** v0.1 branches only from an exact
-checkpoint (`ARCHITECTURE.md`'s capture/scrub flow: "v0.1 branches only when
-the latest verified checkpoint reaches the target without an intervening
-mutation; persisted delta artifacts are post-v0.1"). The type this needs
-already exists and is unused on purpose:
-`DeltaReconstruction`/`checkpoint_plus_deltas` in `packages/protocol`, and
-`packages/branching` already explicitly refuses a nonempty delta list
-(`UNSUPPORTED_RECONSTRUCTION`) rather than attempting one. The work is: a
-storage format for a per-event filesystem delta, a capture path that writes
-one instead of a full manifest at every intervening boundary, a restore path
-that applies a checkpoint plus an ordered delta chain, and — because this
-changes what "reconstructable" means for a whole range of events at once —
-a re-audit of `computeEventCapabilities`'s branchability logic and every UI
-surface that currently reads "exact only" as a simplifying assumption (the
-web capability badge and `chronos inspect`'s `*` marker both currently do).
-
 **Encrypted raw retention.** Every import and record path already has a
 `--retain-raw` / raw-envelope shape wired through the protocol
 (`RawEnvelopeReference`) and refuses it outright in v0.1 specifically
@@ -37,6 +21,14 @@ call sites that reject `--retain-raw` today already know exactly where to
 plug it in.
 
 ## After that
+
+**Delta checkpoint compaction during long recordings.** Persisted delta
+reconstruction is complete for import, live record, capability computation,
+and branch/launch restore: baseline remains a full checkpoint, and every
+successful post-tool boundary writes a content-addressed `ManifestDiff`
+delta. Long sessions therefore grow an ordered apply chain. Occasional
+full-checkpoint compaction (rewrite a fresh CP, reset the chain) is an
+optimization for restore cost, not correctness.
 
 **Concurrent/external-writer detection during capture.** Documented today as
 a limitation Chronos reports rather than hides ("This does not freeze the

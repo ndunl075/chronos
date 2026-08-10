@@ -5,10 +5,12 @@ import { join, relative } from "node:path";
 import { TextDecoder, TextEncoder } from "node:util";
 
 import type { ProviderAgent } from "@chronos/adapters";
+import { materializeReconstructionManifest } from "@chronos/branching";
 import {
   computeEventCapabilities,
   computeReplayContext,
   indexSession,
+  resolveVisibleEvents,
 } from "@chronos/core";
 import {
   isLogicalSequence,
@@ -23,7 +25,6 @@ import {
   ContentStore,
   SnapshotError,
   captureWorkspace,
-  parseManifest,
 } from "@chronos/snapshots";
 import { ChronosRepository, openStorage } from "@chronos/storage";
 
@@ -191,21 +192,32 @@ export async function runLaunch(
       );
     }
     const reconstruction = capabilities.branchability.reconstruction;
-    if (reconstruction.kind !== "exact") {
-      failure("Delta reconstruction is not supported in Chronos v0.1");
-    }
-    const checkpoint = graph.checkpoints.find(
-      (item) => item.id === reconstruction.checkpointId,
+    const deltaOwners = new Map(
+      resolveVisibleEvents(index, child.parentId, child.forkSeq).map(
+        (event) => [event.seq, event.branchId] as const,
+      ),
     );
-    if (checkpoint === undefined) {
-      failure(
-        "The checkpoint this branch reconstructed from is missing",
-        `checkpointId: ${reconstruction.checkpointId}`,
-      );
+    let expectedManifest;
+    try {
+      expectedManifest = materializeReconstructionManifest({
+        store,
+        checkpoints: graph.checkpoints,
+        deltas: graph.deltas,
+        reconstruction,
+        deltaOwners,
+      });
+    } catch (error) {
+      if (error instanceof Error && "code" in error) {
+        failure(
+          "The workspace this branch reconstructed from could not be verified",
+          error.message,
+        );
+      }
+      throw error;
     }
 
     const workspacePath = join(home.workspacesRoot, branch.id);
-    verifyWorkspace(workspacePath, checkpoint.manifestRef, store);
+    verifyWorkspace(workspacePath, expectedManifest.ref, store);
 
     const contextItems = computeReplayContext(
       index,
@@ -316,7 +328,7 @@ function asChildBranch(branch: Branch): ChildBranch | undefined {
 /** Confirm the workspace on disk still matches what Chronos reconstructed. */
 function verifyWorkspace(
   workspacePath: string,
-  manifestRef: string,
+  expectedManifestRef: string,
   store: ContentStore,
 ): void {
   if (!existsSync(workspacePath)) {
@@ -331,10 +343,8 @@ function verifyWorkspace(
       `The reconstructed workspace is not a real directory: ${workspacePath}`,
     );
   }
-  let expected;
   let actualRef: string;
   try {
-    expected = parseManifest(new TextDecoder().decode(store.get(manifestRef)));
     actualRef = captureWorkspace({ workspaceRoot: workspacePath, store })
       .manifest.ref;
   } catch (error) {
@@ -345,7 +355,7 @@ function verifyWorkspace(
     }
     throw error;
   }
-  if (actualRef !== expected.ref) {
+  if (actualRef !== expectedManifestRef) {
     failure(
       "The workspace has changed since Chronos reconstructed it",
       'Run "chronos branch" again for a workspace Chronos can verify, or ' +

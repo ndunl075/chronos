@@ -92,6 +92,7 @@ test("the documented fixture imports into canonical records", () => {
     imported.checkpoints.map((checkpoint) => checkpoint.id),
     ["cp3", "cp5"],
   );
+  assert.deepEqual(imported.deltas, []);
 });
 
 test("raw references are dropped unless retention is opted into", () => {
@@ -137,6 +138,7 @@ test("an imported session is indexable and branchable by the domain core", () =>
     branches: imported.branches,
     events: imported.events,
     checkpoints: imported.checkpoints,
+    deltas: imported.deltas,
   });
 
   assert.deepEqual(
@@ -244,6 +246,48 @@ test("a checkpoint must follow the event it captures", () => {
   rejects(file(line(), checkpoint({ eventSeq: 2 })), "UNKNOWN_EVENT", 4);
   rejects(file(line(), checkpoint(), checkpoint()), "DUPLICATE_ID", 5);
   rejects(file(line(), checkpoint({ manifestRef: "" })), "INVALID_RECORD", 4);
+});
+
+test("a delta must follow the event it captures and cannot share a sequence with a checkpoint", () => {
+  const checkpoint = JSON.stringify({
+    type: "checkpoint",
+    schemaVersion: 1,
+    id: "cp1",
+    branchId: "b1",
+    eventSeq: 1,
+    manifestRef: "sha256:abc",
+  });
+  const delta = (overrides = {}) =>
+    JSON.stringify({
+      type: "delta",
+      schemaVersion: 1,
+      id: "d2",
+      branchId: "b1",
+      eventSeq: 2,
+      diffRef: "sha256:def",
+      ...overrides,
+    });
+
+  const imported = parseChronosJsonl(
+    file(line(), line({ id: "e2", seq: 2, kind: "filesystem_change" }), delta()),
+  );
+  assert.deepEqual(imported.deltas, [
+    {
+      id: "d2",
+      branchId: "b1",
+      eventSeq: 2,
+      diffRef: "sha256:def",
+    },
+  ]);
+  rejects(file(delta(), line()), "UNKNOWN_EVENT", 3);
+  rejects(
+    file(line(), line({ id: "e2", seq: 2 }), delta({ eventSeq: 1 }), checkpoint),
+    "DUPLICATE_ID",
+  );
+  rejects(
+    file(line(), checkpoint, delta({ eventSeq: 1, id: "d1" })),
+    "DUPLICATE_ID",
+  );
 });
 
 test("import limits bound what one file can do", () => {

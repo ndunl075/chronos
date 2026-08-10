@@ -3,6 +3,7 @@ import {
   type Branch,
   type BranchState,
   type Checkpoint,
+  type Delta,
   type Event,
   type LogicalSequence,
   type Session,
@@ -16,6 +17,7 @@ import {
   text,
   toBranch,
   toCheckpoint,
+  toDelta,
   toEvent,
   toEventSummary,
   toSession,
@@ -49,6 +51,7 @@ export interface SessionGraph {
   readonly branches: readonly Branch[];
   readonly events: readonly Event[];
   readonly checkpoints: readonly Checkpoint[];
+  readonly deltas: readonly Delta[];
 }
 
 /**
@@ -299,6 +302,34 @@ export class ChronosRepository {
     );
   }
 
+  insertDelta(delta: Delta): Delta {
+    const id = text(delta.id, "delta id", "INVALID_RECORD");
+    const branchId = text(delta.branchId, "delta branchId", "INVALID_RECORD");
+    const diffRef = text(delta.diffRef, "delta diffRef", "INVALID_RECORD");
+    const eventSeq = delta.eventSeq;
+    if (!isLogicalSequence(eventSeq)) {
+      fail("INVALID_RECORD", "Delta eventSeq is invalid");
+    }
+    this.#write("Delta", () =>
+      this.#statement(
+        `INSERT INTO delta (id, branch_id, event_seq, diff_ref)
+         VALUES (?, ?, ?, ?)`,
+      ).run(id, branchId, eventSeq, diffRef),
+    );
+    return Object.freeze({ id, branchId, eventSeq, diffRef });
+  }
+
+  listDeltas(branchId: string): readonly Delta[] {
+    return Object.freeze(
+      this.#statement(
+        `SELECT id, branch_id, event_seq, diff_ref
+         FROM delta WHERE branch_id = ? ORDER BY event_seq`,
+      )
+        .all(text(branchId, "branch id", "INVALID_RECORD"))
+        .map(toDelta),
+    );
+  }
+
   /** Read a whole session in the shape `@chronos/core` indexes. */
   loadSessionGraph(sessionId: string): SessionGraph {
     const id = text(sessionId, "session id", "INVALID_RECORD");
@@ -326,6 +357,15 @@ export class ChronosRepository {
         )
           .all(id)
           .map(toCheckpoint),
+      ),
+      deltas: Object.freeze(
+        this.#statement(
+          `SELECT id, branch_id, event_seq, diff_ref FROM delta
+           WHERE branch_id IN (SELECT id FROM branch WHERE session_id = ?)
+           ORDER BY branch_id, event_seq`,
+        )
+          .all(id)
+          .map(toDelta),
       ),
     });
   }
