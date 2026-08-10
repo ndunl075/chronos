@@ -28,17 +28,18 @@ CLI -> localhost API/SSE -> timeline UI
                      branch planner -> isolated restore -> adapter launch plan
 ```
 
-| Module               | Responsibility                                           |
-| -------------------- | -------------------------------------------------------- |
-| `packages/core`      | Domain types, invariants, branch/replay planning; no I/O |
-| `packages/protocol`  | Versioned schemas shared by API, CLI, and UI             |
-| `packages/storage`   | SQLite migrations and repositories                       |
-| `packages/adapters`  | Provider-specific import/export behind one interface     |
-| `packages/snapshots` | Ignore-aware manifests, blobs, capture, restore          |
-| `packages/branching` | The one branch workflow: plan, restore, settle, instruct |
-| `apps/server`        | Loopback HTTP API and SSE event stream                   |
-| `apps/web`           | Virtualized transcript, scrubber, branch composer        |
-| `apps/cli`           | Import, record, inspect, serve, branch, and launch       |
+| Module               | Responsibility                                            |
+| -------------------- | --------------------------------------------------------- |
+| `packages/core`      | Domain types, invariants, branch/replay planning; no I/O  |
+| `packages/protocol`  | Versioned schemas shared by API, CLI, and UI              |
+| `packages/storage`   | SQLite migrations and repositories                        |
+| `packages/adapters`  | Provider-specific import/export behind one interface      |
+| `packages/snapshots` | Ignore-aware manifests, blobs, capture, restore           |
+| `packages/branching` | The one branch workflow: plan, restore, settle, instruct  |
+| `apps/server`        | Loopback HTTP API and SSE event stream                    |
+| `apps/web`           | Virtualized transcript, scrubber, branch composer         |
+| `apps/cli`           | Import, record, inspect, serve, branch, and launch        |
+| `apps/e2e`           | Product acceptance across the CLI, server, and web client |
 
 ## Canonical records
 
@@ -146,6 +147,9 @@ Completion slices, each independently verified and committed:
    Delivered: `apps/web/src/stream.ts` reads the session stream by hand off a `fetch` response's raw byte body — `EventSource` cannot carry the bearer header every other route requires — decoding, buffering, and splitting on the wire's blank-line frame boundary itself. A frame missing an `event:`/`data:` line, an `appended` payload that fails JSON parsing, or one that parses but does not have the exact `{schemaVersion, sessionId, branchId, eventIds: string[]}` shape is silently skipped rather than thrown, so one bad frame never drops the connection or the frames after it; a single frame is bounded at 64 KiB to cap what a misbehaving server could make the browser buffer. A dropped connection — the body ending cleanly, a fetch rejection, a non-ok response — reconnects with linear backoff capped at 30s, reported through the same `onStateChange` callback the UI uses for its `LIVE`/`CONNECTING`/`RECONNECTING`/`OFFLINE` badge (an `aria-live="polite"` region, so the state reaches assistive tech the same moment it reaches the eye); the loop only stops for good when its `AbortSignal` fires, and never issues another connection attempt afterward. `ChronosTimeline` refetches only the events after the last one it already has (`getTimelineSince`, not the whole history again) when a notice names its current branch, appends them, and never moves the scrubber or the selected event: a live update lands behind whatever the user is looking at, not on top of it. Rendering itself is capped at 500 rows (`boundRenderedRows`) so a long-running or large-history branch does not turn every append into a full-history DOM rebuild; the scrubber and event lookup still range over the complete in-memory history regardless of what is painted. Capability rendering was not touched, so it still only ever treats `kind: "exact"` reconstructions as branchable — v0.1's core has no code path that produces a nonempty-delta reconstruction to begin with. Tests exercise the frame reader directly with real `ReadableStream` bodies (no DOM, no browser): malformed frames interleaved with valid ones, a clean end-of-stream reconnect, a fetch rejection treated as a reconnect not a crash, an abort that stops all further connection attempts, and 2000 frames delivered across arbitrarily split byte chunks arriving in order.
 
 5. **Product E2E:** split acceptance into (a) exact-version provider fixture import -> CLI inspect and (b) fake-provider record/capture -> serve -> browser SSE refresh/scrub -> restore/branch -> confirmed launch, all under a temporary home/workspace. Assert command-builder compatibility, snapshot transaction/failure behavior, argv, `shell: false`, `cwd`, 64 KiB context ordering/instruction delivery, `.env` and `.chronos/` exclusion, token removal, and inert historical commands.
+
+   Delivered: a new `apps/e2e` workspace depends on the real built `@chronos/cli`, `@chronos/server`, and `@chronos/web` packages together, so it exercises the actual product surface, not a re-implementation of it. `test/import-inspect.test.mjs` imports both exact-version fixtures through the real CLI and reads them back through `chronos inspect`, asserting the diagnosed-omission and no-checkpoint messaging a user actually sees. `test/record-serve-branch-launch.test.mjs` records a fake Codex tool call that writes a real file next to a real `.env` secret, confirms the checkpoint manifest and every restored workspace exclude both `.env` and `.chronos/`, starts a real server against that same home, and drives it with the real `ChronosApiClient`: token-rejection and token-never-persisted-to-disk checks, a scrub of the recorded timeline, a live SSE subscription that receives a real append notice and refetches only what is new, a real `createBranch` call that reconstructs an isolated workspace, and a confirmed `chronos launch` whose resolved plan is asserted against the pure `buildLaunchCommand` output for those exact real inputs rather than a hand-written expectation — command-builder compatibility proven by construction, not duplication. The launch replay file is read back to confirm 64 KiB compliance, that the new instruction is delivered as the task, that the branch point's first inherited instruction survives context ordering, and that the recorded tool call reads only as quoted, blockquoted history. A second test reuses the checkpoint-transaction-failure technique to prove a failed capture leaves a dirty, non-branchable, `failed` recording end to end through the CLI, not only inside `record`'s own unit tests.
+
 6. **Open-source release:** add Ubuntu/Windows/macOS CI, security/threat-model and contribution docs, accurate setup/CLI usage, a changelog, bump the private source-distributed monorepo/CLI to `0.1.0`, add a source-install smoke test, and provide one reproducible `verify:v0.1` command including browser E2E. npm publication is out of scope for v0.1.
 
 Guards: do not infer checkpoints from provider file-history metadata, claim compatibility beyond observed versions, put bearer tokens in committed fixtures/screenshots, expose the server beyond loopback, weaken Host/Origin checks for tests, store `.chronos/` replay artifacts in snapshots, or describe best-effort redaction as a security boundary.

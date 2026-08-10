@@ -19,6 +19,7 @@ export default [
         AbortController: "readonly",
         DOMException: "readonly",
         ReadableStream: "readonly",
+        TextDecoder: "readonly",
         TextEncoder: "readonly",
         fetch: "readonly",
       },

@@ -1,0 +1,19 @@
+{
+  "name": "@chronos/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Product acceptance tests spanning the CLI, server, and web client together.",
+  "scripts": {
+    "test": "node --test test/import-inspect.test.mjs test/record-serve-branch-launch.test.mjs"
+  },
+  "dependencies": {
+    "@chronos/adapters": "0.0.0",
+    "@chronos/cli": "0.0.0",
+    "@chronos/protocol": "0.0.0",
+    "@chronos/server": "0.0.0",
+    "@chronos/snapshots": "0.0.0",
+    "@chronos/storage": "0.0.0",
+    "@chronos/web": "0.0.0"
+  }
+}
