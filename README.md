@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="Chronos" width="220" />
+</p>
+
 # Chronos
 
 Chronos is an open-source time-travel debugger for AI coding-agent sessions.
