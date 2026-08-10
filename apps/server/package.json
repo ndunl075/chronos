@@ -1,6 +1,6 @@
 {
   "name": "@chronos/server",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "files": [
@@ -13,11 +13,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@chronos/adapters": "0.0.0",
-    "@chronos/branching": "0.0.0",
-    "@chronos/core": "0.0.0",
-    "@chronos/protocol": "0.0.0",
-    "@chronos/snapshots": "0.0.0",
-    "@chronos/storage": "0.0.0"
+    "@chronos/adapters": "0.1.0",
+    "@chronos/branching": "0.1.0",
+    "@chronos/core": "0.1.0",
+    "@chronos/protocol": "0.1.0",
+    "@chronos/snapshots": "0.1.0",
+    "@chronos/storage": "0.1.0"
   }
 }

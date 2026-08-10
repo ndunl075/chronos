@@ -20,7 +20,7 @@ import { launchSpec, runLaunch } from "./commands/launch.js";
 import { resolveHome } from "./home.js";
 import { Reporter, table, type Streams } from "./output.js";
 
-export const CLI_VERSION = "0.0.0";
+export const CLI_VERSION = "0.1.0";
 
 type CommandRunner = (
   args: ParsedArgs,
