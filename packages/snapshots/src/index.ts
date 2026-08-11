@@ -68,3 +68,8 @@ export {
   type RestoreOptions,
   type RestoreResult,
 } from "./restore.js";
+export {
+  restoreSnapshotInPlace,
+  type InPlaceRestoreOptions,
+  type InPlaceRestoreResult,
+} from "./restore-inplace.js";

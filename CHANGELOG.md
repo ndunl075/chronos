@@ -5,6 +5,17 @@ All notable changes to Chronos are documented here. This project follows
 still include breaking changes to the storage schema, protocol, or CLI. This
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Wrap + in-place rollback:** `chronos wrap --workspace DIR -- <command>...`
+  snapshots any command as a git-independent turn (baseline on first turn,
+  deltas after each), and `chronos rollback` restores the live workspace to an
+  earlier turn with `--confirm`. Excluded paths stay untouched.
+- **Docs:** README pitch for local rollback / time-travel beyond the last
+  commit.
+
 ## [0.2.0] — Persisted delta reconstruction
 
 ### Added

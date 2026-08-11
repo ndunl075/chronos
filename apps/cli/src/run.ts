@@ -17,6 +17,8 @@ import { inspectSpec, runInspect } from "./commands/inspect.js";
 import { runServe, serveSpec } from "./commands/serve.js";
 import { recordSpec, runRecord } from "./commands/record.js";
 import { launchSpec, runLaunch } from "./commands/launch.js";
+import { rollbackSpec, runRollback } from "./commands/rollback.js";
+import { wrapSpec, runWrap } from "./commands/wrap.js";
 import { resolveHome } from "./home.js";
 import { Reporter, table, type Streams } from "./output.js";
 
@@ -35,6 +37,8 @@ interface Command {
 const COMMANDS: readonly Command[] = Object.freeze([
   { spec: importSpec, run: runImport },
   { spec: recordSpec, run: runRecord },
+  { spec: wrapSpec, run: runWrap },
+  { spec: rollbackSpec, run: runRollback },
   { spec: inspectSpec, run: runInspect },
   { spec: serveSpec, run: runServe },
   { spec: branchSpec, run: runBranch },
@@ -53,6 +57,8 @@ export interface RunEnvironment {
   readonly providerExecutable?: string;
   /** Test/integration seam; normal CLI invocations use child_process.spawn. */
   readonly launchExecutor?: import("./commands/launch.js").LaunchExecutor;
+  /** Test/integration seam for wrap's child process. */
+  readonly wrapExecutor?: import("./commands/wrap.js").WrapExecutor;
 }
 
 /**
@@ -110,6 +116,9 @@ export async function run(
       ...(environment.launchExecutor === undefined
         ? {}
         : { launchExecutor: environment.launchExecutor }),
+      ...(environment.wrapExecutor === undefined
+        ? {}
+        : { wrapExecutor: environment.wrapExecutor }),
     });
     return EXIT_OK;
   } catch (error) {
@@ -140,6 +149,8 @@ function overview(): string {
     "",
     "Commands:",
     ...table(rows),
+    "",
+    "Wrap any command for turn snapshots; roll back with chronos rollback.",
     "",
     "Options:",
     ...table([

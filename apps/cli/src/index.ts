@@ -29,3 +29,10 @@ export {
   type LaunchExecutor,
   type RenderedReplay,
 } from "./commands/launch.js";
+export {
+  executeWrappedCommand,
+  runWrap,
+  wrapSpec,
+  type WrapExecutor,
+} from "./commands/wrap.js";
+export { rollbackSpec, runRollback } from "./commands/rollback.js";

@@ -2874,3 +2874,112 @@ test(
     assert.equal(Date.now() - started < 3_000, true);
   },
 );
+
+async function cliWrap(box, argv, wrapExecutor) {
+  const out = [];
+  const err = [];
+  const exitCode = await run(argv, {
+    streams: {
+      write: (text) => out.push(text),
+      writeError: (text) => err.push(text),
+    },
+    cwd: box.root,
+    env: { CHRONOS_HOME: box.home },
+    wrapExecutor,
+  });
+  return { exitCode, out: out.join(""), err: err.join("") };
+}
+
+test("wrap snapshots turns and rollback restores the workspace in place", async (t) => {
+  const box = sandbox(t);
+  const workspace = join(box.root, "proj");
+  mkdirSync(workspace);
+  writeFileSync(join(workspace, "app.txt"), "v0");
+  writeFileSync(join(workspace, ".env"), "SECRET=keep");
+
+  const first = await cliWrap(
+    box,
+    ["wrap", "--workspace", workspace, "--", "agent", "turn-1"],
+    async (command) => {
+      assert.equal(command.executable, "agent");
+      assert.deepEqual([...command.args], ["turn-1"]);
+      writeFileSync(join(workspace, "app.txt"), "v1");
+      writeFileSync(join(workspace, "new.txt"), "added");
+      return 0;
+    },
+  );
+  assert.equal(first.exitCode, 0, first.err);
+  assert.match(first.out, /Started wrap session wrap:/);
+  assert.match(first.out, /turn seq\s+3/);
+
+  const second = await cliWrap(
+    box,
+    ["wrap", "--workspace", workspace, "--", "agent", "turn-2"],
+    async () => {
+      writeFileSync(join(workspace, "app.txt"), "v2");
+      return 0;
+    },
+  );
+  assert.equal(second.exitCode, 0, second.err);
+  assert.match(second.out, /Continued wrap session wrap:/);
+  assert.equal(readFileSync(join(workspace, "app.txt"), "utf8"), "v2");
+
+  const plan = await cli(box, [
+    "rollback",
+    "--workspace",
+    workspace,
+    "--steps",
+    "1",
+  ]);
+  assert.equal(plan.exitCode, 0, plan.err);
+  assert.match(plan.out, /Re-run with --confirm/);
+  assert.equal(readFileSync(join(workspace, "app.txt"), "utf8"), "v2");
+
+  const rolled = await cli(box, [
+    "rollback",
+    "--workspace",
+    workspace,
+    "--steps",
+    "1",
+    "--confirm",
+  ]);
+  assert.equal(rolled.exitCode, 0, rolled.err);
+  assert.equal(readFileSync(join(workspace, "app.txt"), "utf8"), "v1");
+  assert.equal(existsSync(join(workspace, "new.txt")), true);
+  assert.equal(readFileSync(join(workspace, ".env"), "utf8"), "SECRET=keep");
+
+  const toBaseline = await cli(box, [
+    "rollback",
+    "--workspace",
+    workspace,
+    "--steps",
+    "2",
+    "--confirm",
+  ]);
+  assert.equal(toBaseline.exitCode, 0, toBaseline.err);
+  assert.equal(readFileSync(join(workspace, "app.txt"), "utf8"), "v0");
+  assert.equal(existsSync(join(workspace, "new.txt")), false);
+});
+
+test("wrap propagates a non-zero child exit code after capturing", async (t) => {
+  const box = sandbox(t);
+  const workspace = join(box.root, "proj");
+  mkdirSync(workspace);
+  writeFileSync(join(workspace, "app.txt"), "ok");
+
+  const result = await cliWrap(
+    box,
+    ["wrap", "--workspace", workspace, "--json", "--", "agent", "fail"],
+    async () => {
+      writeFileSync(join(workspace, "app.txt"), "failed-edit");
+      return 7;
+    },
+  );
+  assert.equal(result.exitCode, 7);
+  assert.match(result.out, /"exitCode": 7/);
+  const repo = box.read();
+  const sessions = repo.listSessions();
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0].source, "wrap");
+  assert.ok(repo.listDeltas(`${sessions[0].id}:root`).length >= 1);
+});

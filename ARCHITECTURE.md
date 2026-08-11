@@ -6,6 +6,8 @@
 
 Chronos imports an agent session and lets a user scrub to any recorded event. When that event has reconstructable captured filesystem state, Chronos restores it (subject to exclusions) in isolation and starts a child branch with a new instruction.
 
+`chronos wrap` / `chronos rollback` add a lighter path: snapshot an arbitrary command as a turn (baseline + post-turn deltas) and optionally rewrite the live workspace in place to an earlier turn, still without touching excluded paths and without replaying tool calls.
+
 **MVP means:** transcript/tool-event replay plus filesystem restoration. It does not claim to rewind process memory, hidden provider state, or external side effects.
 
 ## Principles

@@ -9,6 +9,10 @@ Import a transcript or record one live, scrub to any point with reconstructable
 filesystem state, and branch from there with a new instruction — into an
 isolated workspace, running nothing until you explicitly say so.
 
+It is also a **local rollback tool**: wrap any agent (or other) command to
+snapshot file state around each turn — git-independent — so you can time-travel
+to any point in that session, not just the last commit.
+
 Chronos is local-first: everything lives under `$CHRONOS_HOME` (default
 `~/.chronos`), the server only ever binds `127.0.0.1`, and nothing recorded or
 imported executes on its own. v0.1 covers transcript/tool-event replay and
@@ -66,6 +70,22 @@ JSON-stream mode, with a durable baseline snapshot and a checkpoint after
 every completed tool-result batch. See
 [docs/formats/provider-jsonl.md](docs/formats/provider-jsonl.md) for exactly
 what this does and does not capture.
+
+### Wrap any command (turn snapshots + rollback)
+
+```sh
+chronos wrap --workspace ./my-project -- your-agent --flag "do the thing"
+chronos wrap --workspace ./my-project -- your-agent --flag "try again"
+chronos rollback --workspace ./my-project --steps 1            # plan
+chronos rollback --workspace ./my-project --steps 1 --confirm  # rewrite in place
+```
+
+`wrap` does not parse provider transcripts. Each invocation is one turn: a
+baseline snapshot on the first turn, then a delta after every command. Resume
+is automatic via `.chronos/wrap-session.json` (or pass `--session`).
+`rollback` restores policy-included files in place and leaves exclusions
+(`.git/`, `.env`, `.chronos/`, …) untouched. Prefer `chronos branch` when you
+want an isolated copy instead of rewriting the live workspace.
 
 ### Inspect what you have
 

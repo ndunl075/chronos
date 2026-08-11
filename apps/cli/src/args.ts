@@ -16,6 +16,11 @@ export interface CommandSpec {
   readonly summary: string;
   readonly positionals: readonly PositionalSpec[];
   readonly flags: Readonly<Record<string, FlagSpec>>;
+  /**
+   * When true, extra argv after the declared positionals is kept (for
+   * `chronos wrap -- cmd ...`). Without this, surplus tokens are a usage error.
+   */
+  readonly rest?: boolean;
 }
 
 export interface ParsedArgs {
@@ -88,7 +93,7 @@ export function parseArgs(
       usageLine(spec),
     );
   }
-  if (positionals.length > spec.positionals.length) {
+  if (!spec.rest && positionals.length > spec.positionals.length) {
     usageError(
       `${spec.name} takes at most ${String(spec.positionals.length)} arguments`,
       usageLine(spec),
@@ -104,15 +109,21 @@ export function usageLine(spec: CommandSpec): string {
   const parts = spec.positionals.map((item) =>
     item.required ? `<${item.name}>` : `[${item.name}]`,
   );
+  if (spec.rest) parts.push("--", "<command>...");
   return `Usage: chronos ${spec.name} ${parts.join(" ")} [options]`.trim();
 }
 
 export function helpText(spec: CommandSpec): string {
   const lines = [usageLine(spec), "", spec.summary];
-  if (spec.positionals.length > 0) {
+  if (spec.positionals.length > 0 || spec.rest) {
     lines.push("", "Arguments:");
     for (const item of spec.positionals) {
       lines.push(`  ${item.name.padEnd(20)}${item.description}`);
+    }
+    if (spec.rest) {
+      lines.push(
+        `  ${"command".padEnd(20)}Executable and args after -- (required)`,
+      );
     }
   }
   const flagNames = Object.keys(spec.flags).sort();

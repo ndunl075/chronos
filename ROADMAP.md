@@ -63,7 +63,8 @@ stream-json`) because those are the only modes with a well-defined,
 parseable event grammar. Recording an interactive session would mean either
 screen-scraping a TUI or the provider exposing a structured event stream
 from its interactive mode — a provider-side dependency Chronos does not
-control.
+control. (`chronos wrap` covers the lighter “snapshot each turn of an
+arbitrary CLI” case without parsing provider events.)
 
 **Provider-native resume/fork.** Chronos's branch/restore model is its own;
 it does not integrate with Codex's or Claude Code's own session resume

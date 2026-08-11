@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -23,6 +24,7 @@ import {
   captureWorkspace,
   diffManifests,
   restoreSnapshot,
+  restoreSnapshotInPlace,
 } from "../dist/index.js";
 
 const POSIX = process.platform !== "win32";
@@ -438,4 +440,37 @@ test("the default file-size limit is enforced during the walk, not only afterwar
   // oversized file, and everything after it, was already read and stored.
   assert.equal(box.store.has(blobRef(bytes(oversized))), false);
   assert.equal(box.store.has(blobRef(bytes("small"))), false);
+});
+
+test("in-place restore rewrites included files and leaves exclusions alone", (t) => {
+  const box = sandbox(t);
+  box.write("keep.txt", "v1");
+  box.write("gone.txt", "delete-me");
+  mkdirSync(join(box.workspace, ".git"), { recursive: true });
+  writeFileSync(join(box.workspace, ".git", "HEAD"), "ref: refs/heads/main");
+  writeFileSync(join(box.workspace, ".env"), "SECRET=1");
+
+  const baseline = captureWorkspace({
+    workspaceRoot: box.workspace,
+    store: box.store,
+  });
+  box.write("keep.txt", "v2");
+  box.write("extra.txt", "new");
+
+  const result = restoreSnapshotInPlace({
+    manifest: baseline.manifest,
+    store: box.store,
+    workspaceRoot: box.workspace,
+  });
+
+  assert.equal(readFileSync(join(box.workspace, "keep.txt"), "utf8"), "v1");
+  assert.equal(existsSync(join(box.workspace, "gone.txt")), true);
+  assert.equal(existsSync(join(box.workspace, "extra.txt")), false);
+  assert.equal(readFileSync(join(box.workspace, ".env"), "utf8"), "SECRET=1");
+  assert.equal(
+    readFileSync(join(box.workspace, ".git", "HEAD"), "utf8"),
+    "ref: refs/heads/main",
+  );
+  assert.ok(result.filesWritten >= 1);
+  assert.ok(result.filesRemoved >= 1);
 });

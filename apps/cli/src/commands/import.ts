@@ -60,6 +60,8 @@ export interface CommandContext {
   readonly providerExecutable?: string;
   /** Test/integration seam for the interactive launch spawn. */
   readonly launchExecutor?: import("./launch.js").LaunchExecutor;
+  /** Test/integration seam for wrap's child process. */
+  readonly wrapExecutor?: import("./wrap.js").WrapExecutor;
 }
 
 /**
