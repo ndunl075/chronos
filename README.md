@@ -4,22 +4,26 @@
 
 # Chronos
 
-Chronos is an open-source time-travel debugger for AI coding-agent sessions.
-Import a transcript or record one live, scrub to any point with reconstructable
-filesystem state, and branch from there with a new instruction — into an
-isolated workspace, running nothing until you explicitly say so.
+Chronos is a local-first time-travel debugger **and** rollback tool for AI
+coding-agent sessions. Snapshot filesystem state around each agent turn
+without relying on git, scrub to any reconstructable point, branch with a new
+instruction into an isolated workspace, or roll the live tree back in place —
+nothing runs until you explicitly say so.
 
-It is also a **local rollback tool**: wrap any agent (or other) command to
-snapshot file state around each turn — git-independent — so you can time-travel
-to any point in that session, not just the last commit.
+Use it two ways:
 
-Chronos is local-first: everything lives under `$CHRONOS_HOME` (default
-`~/.chronos`), the server only ever binds `127.0.0.1`, and nothing recorded or
-imported executes on its own. v0.1 covers transcript/tool-event replay and
-isolated filesystem restoration; it does not rewind process memory, hidden
-provider state, or external side effects. See
-[ARCHITECTURE.md](ARCHITECTURE.md) for the full product contract and
-[SECURITY.md](SECURITY.md) for the trust model this runs under.
+- **`chronos wrap` / `chronos rollback`** — wrap any agent (or other) CLI;
+  each invocation is one turn with a git-independent snapshot so you can
+  time-travel past the last commit.
+- **`chronos import` / `record` / `branch` / `launch`** — full session
+  debugger: import or record transcripts, inspect the timeline, fork, and
+  launch a fresh agent into a reconstructed workspace.
+
+Chronos stores everything under `$CHRONOS_HOME` (default `~/.chronos`), the
+server only ever binds `127.0.0.1`, and nothing recorded or imported executes
+on its own. It does not rewind process memory, hidden provider state, or
+external side effects. See [ARCHITECTURE.md](ARCHITECTURE.md) for the product
+contract and [SECURITY.md](SECURITY.md) for the trust model.
 
 ## Install (from source)
 
@@ -142,8 +146,8 @@ domain and infrastructure modules live in `packages/`.
 
 ## Project status
 
-See [CHANGELOG.md](CHANGELOG.md) for what shipped in `0.2.0` and
-[ROADMAP.md](ROADMAP.md) for what's next.
+See [CHANGELOG.md](CHANGELOG.md) for what shipped in `0.2.0` (and unreleased
+wrap/rollback) and [ROADMAP.md](ROADMAP.md) for what's next.
 
 ## License
 
